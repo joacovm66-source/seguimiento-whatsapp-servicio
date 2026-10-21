@@ -1,0 +1,10 @@
+{
+  "name": "puente-whatsapp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Puente local entre la app Seguimiento Comercial y WhatsApp (WhatsApp Web por QR)",
+  "scripts": { "start": "node puente.js", "prueba": "MOCK=1 node puente.js" },
+  "engines": { "node": ">=18" },
+  "dependencies": { "@whiskeysockets/baileys": "7.0.0-rc14", "pino": "^9.0.0", "qrcode": "^1.5.4", "cloudflared": "^0.7.1" }
+}

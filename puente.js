@@ -99,7 +99,7 @@ async function startWA(sl) {
     sock.ev.on("creds.update", async () => { await saveCreds(); persist(sl); });
     sock.ev.on("connection.update", async u => {
       if (gen !== sl.gen) return;
-      if (u.qr) { sl.st.state = "qr"; sl.st.qr = await QRCode.toDataURL(u.qr, { margin: 1, width: 320 }); log(sl.email, "espera que escaneen el QR"); }
+      if (u.qr) { sl.st.state = "qr"; sl.st.qr = await QRCode.toDataURL(u.qr, { margin: 2, scale: 6, errorCorrectionLevel: "M" }); log(sl.email, "espera que escaneen el QR"); }
       if (u.connection === "open") { sl.st.state = "open"; sl.st.qr = null; sl.st.err = ""; sl.st.me = digits((sock.user && sock.user.id || "").split(":")[0].split("@")[0]); log(sl.email, "WhatsApp conectado:", sl.st.me); }
       if (u.connection === "close") {
         const code = u.lastDisconnect && u.lastDisconnect.error && u.lastDisconnect.error.output && u.lastDisconnect.error.output.statusCode;

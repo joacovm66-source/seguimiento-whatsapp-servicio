@@ -95,7 +95,7 @@ async function startWA(sl) {
     const { state, saveCreds } = await B.useMultiFileAuthState(sl.auth);
     let version; try { version = (await B.fetchLatestBaileysVersion()).version; } catch { }
     sl.st.state = "connecting";
-    const sock = sl.sock = makeWASocket({ auth: state, version, logger: pino({ level: "silent" }), printQRInTerminal: false, browser: ["Seguimiento Comercial", "Chrome", "1.0"], markOnlineOnConnect: false, syncFullHistory: false });
+    const sock = sl.sock = makeWASocket({ auth: state, version, logger: pino({ level: "silent" }), printQRInTerminal: false, browser: B.Browsers ? B.Browsers.ubuntu("Chrome") : ["Ubuntu", "Chrome", "22.04.4"], markOnlineOnConnect: false, syncFullHistory: false });
     sock.ev.on("creds.update", async () => { await saveCreds(); persist(sl); });
     sock.ev.on("connection.update", async u => {
       if (gen !== sl.gen) return;
@@ -103,6 +103,7 @@ async function startWA(sl) {
       if (u.connection === "open") { sl.st.state = "open"; sl.st.qr = null; sl.st.err = ""; sl.st.me = digits((sock.user && sock.user.id || "").split(":")[0].split("@")[0]); log(sl.email, "WhatsApp conectado:", sl.st.me); }
       if (u.connection === "close") {
         const code = u.lastDisconnect && u.lastDisconnect.error && u.lastDisconnect.error.output && u.lastDisconnect.error.output.statusCode;
+        log(sl.email, "conexión cerrada, código", code, String(u.lastDisconnect && u.lastDisconnect.error && u.lastDisconnect.error.message || "").slice(0, 120));
         sl.st.state = "off"; sl.st.qr = null; sl.st.me = ""; sl.started = false;
         if (code === B.DisconnectReason.loggedOut) { try { fs.rmSync(sl.auth, { recursive: true, force: true }); } catch { } log(sl.email, "sesión cerrada desde el teléfono"); sl.st.err = "Se cerró la sesión desde el teléfono. Escanee otra vez."; }
         else { sl.st.err = "Reconectando…"; setTimeout(() => startWA(sl), 3000); }
@@ -193,7 +194,19 @@ const server = http.createServer(async (req, res) => {
     if (u.pathname === "/sync") {
       startWA(sl);
       const r = +u.searchParams.get("r") || 0, p = +u.searchParams.get("p") || 0;
+      if (p > 0) { const n0 = DATA.replies.length; DATA.replies = DATA.replies.filter(x => x.seq > p || Date.now() - Date.parse(x.ts) < 3600000); if (DATA.replies.length !== n0) saveData(sl); } /* privacidad: no se guardan respuestas ya recibidas por la app */
       return send(res, 200, { state: st.state, qr: st.qr, me: st.me, err: st.err, pending: queue.length, sentToday: DATA.sentToday, cap: CFG.dailyCap, paused: sl.paused, breakIn: sl.breakUntil ? Math.max(0, Math.round((sl.breakUntil - Date.now()) / 1000)) : 0, cfg: { minDelay: CFG.minDelay, maxDelay: CFG.maxDelay, batch: CFG.batch, pauseMin: CFG.pauseMin }, results: DATA.results.filter(x => x.seq > r), replies: DATA.replies.filter(x => x.seq > p), seq: DATA.seq, rseq: DATA.rseq });
+    }
+    if (u.pathname === "/pair" && req.method === "POST") {
+      const b = await body(req), phone = digits(b.phone || "");
+      if (phone.length < 8 || phone.length > 15) return send(res, 200, { error: "Escriba el número con código de país, por ejemplo 51987654321." });
+      if (MOCK) return send(res, 200, { code: "ABCD-1234" });
+      startWA(sl);
+      for (let i = 0; i < 20 && !(sl.sock && (st.state === "qr" || st.state === "connecting")); i++) await new Promise(r => setTimeout(r, 500));
+      if (st.state === "open") return send(res, 200, { error: "Ya está conectado." });
+      if (!sl.sock || (sl.sock.authState && sl.sock.authState.creds && sl.sock.authState.creds.registered)) return send(res, 200, { error: "Todavía no está listo. Intente en unos segundos." });
+      try { await new Promise(r => setTimeout(r, 1500)); const c = await sl.sock.requestPairingCode(phone); log(sl.email, "código de vinculación generado"); return send(res, 200, { code: String(c).replace(/(.{4})(.{4})/, "$1-$2") }); }
+      catch (e) { log(sl.email, "pair error", e.message); return send(res, 200, { error: "No se pudo generar el código. Pulse Reintentar." }); }
     }
     if (u.pathname === "/send" && req.method === "POST") {
       const b = await body(req); let n = 0;

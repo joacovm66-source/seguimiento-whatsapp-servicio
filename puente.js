@@ -27,6 +27,10 @@ const CFG = Object.assign({
 }, readJson(F_CFG, {}));
 if (process.env.ALLOWED) CFG.allowed = process.env.ALLOWED.split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
 CFG.allowed = CFG.allowed.map(s => String(s).toLowerCase().replace(/^@/, ""));
+/* Llave de servicio (service_role): se lee de la variable SUPABASE_SERVICE_KEY o del archivo llave-servicio.txt junto a este programa. Sin ella usa la llave pública (modo antiguo). */
+const SERVICE_KEY = (process.env.SUPABASE_SERVICE_KEY || (() => { try { return fs.readFileSync(path.join(DIR, "llave-servicio.txt"), "utf8"); } catch { return ""; } })()).trim();
+const DB_KEY = SERVICE_KEY || CFG.supabaseKey;
+const DB_HEADERS = Object.assign({ apikey: DB_KEY, "Content-Type": "application/json" }, DB_KEY.startsWith("sb_") ? {} : { Authorization: "Bearer " + DB_KEY });
 const saveCfg = () => { const { supabaseKey, secret, ...pub } = CFG; fs.writeFileSync(F_CFG, JSON.stringify(pub, null, 2)); };
 saveCfg();
 
@@ -41,8 +45,8 @@ const allowedEmail = e => { e = String(e || "").toLowerCase(); if (CFG.allowed.i
 /* ----- Respaldo en Supabase (para servidores gratis que borran los archivos al reiniciar) ----- */
 const CLOUD_STATE = process.env.CLOUD_STATE === "1" || !!process.env.RENDER;
 async function rpc(name, args) {
-  const r = await fetch(CFG.supabaseUrl + "/rest/v1/rpc/" + name, { method: "POST", headers: { apikey: CFG.supabaseKey, Authorization: "Bearer " + CFG.supabaseKey, "Content-Type": "application/json" }, body: JSON.stringify(Object.assign({ secret: CFG.secret }, args)) });
-  if (!r.ok) throw new Error(name + " " + r.status); return r.json();
+  const r = await fetch(CFG.supabaseUrl + "/rest/v1/rpc/" + name, { method: "POST", headers: DB_HEADERS, body: JSON.stringify(Object.assign({ secret: CFG.secret }, args)) });
+  if (!r.ok) throw new Error(name + " " + r.status); const t = await r.text(); try { return t ? JSON.parse(t) : null; } catch { return null; }
 }
 const walk = (d, base = "") => { let o = {}; if (!fs.existsSync(d)) return o; for (const f of fs.readdirSync(d, { withFileTypes: true })) { const rel = base ? base + "/" + f.name : f.name, fp = path.join(d, f.name); if (f.isDirectory()) Object.assign(o, walk(fp, rel)); else if (/\.(json)$/.test(f.name)) { try { o[rel] = fs.readFileSync(fp, "utf8"); } catch { } } } return o; };
 const timers = new Map();
@@ -105,6 +109,7 @@ async function startWA(sl) {
         const code = u.lastDisconnect && u.lastDisconnect.error && u.lastDisconnect.error.output && u.lastDisconnect.error.output.statusCode;
         log(sl.email, "conexión cerrada, código", code, String(u.lastDisconnect && u.lastDisconnect.error && u.lastDisconnect.error.message || "").slice(0, 120));
         sl.st.state = "off"; sl.st.qr = null; sl.st.me = ""; sl.started = false;
+        if (code === 403) { sl.st.err = "WhatsApp restringió este número. No envíe más por ahora y revise el teléfono."; log(sl.email, "NÚMERO RESTRINGIDO por WhatsApp"); sl.paused = true; return; }
         if (code === B.DisconnectReason.loggedOut) { try { fs.rmSync(sl.auth, { recursive: true, force: true }); } catch { } log(sl.email, "sesión cerrada desde el teléfono"); sl.st.err = "Se cerró la sesión desde el teléfono. Escanee otra vez."; }
         else { sl.st.err = "Reconectando…"; setTimeout(() => startWA(sl), 3000); }
       }
@@ -129,7 +134,9 @@ async function worker(sl) {
   while (queue.length) {
     if (sl.paused || st.state !== "open") { await sleep(3000); continue; }
     if (DATA.day !== today()) { DATA.day = today(); DATA.sentToday = 0; }
-    if (DATA.sentToday >= CFG.dailyCap) { st.err = "Se alcanzó el tope diario (" + CFG.dailyCap + "). Continúa mañana."; await sleep(60000); continue; }
+    const capHoy = Math.min(CFG.dailyCap, (sl.acc && sl.acc.tope_dia) || Infinity);
+    if (restantes(sl.acc) <= 0) { st.err = "Se acabaron los envíos de su plan."; queue.length = 0; break; }
+    if (DATA.sentToday >= capHoy) { st.err = "Se alcanzó el tope diario (" + capHoy + "). Continúa mañana."; await sleep(60000); continue; }
     st.err = "";
     if (sl.sinceBreak >= CFG.batch) { sl.breakUntil = Date.now() + CFG.pauseMin * 60000; log(sl.email, "descanso", CFG.pauseMin, "min"); await sleep(CFG.pauseMin * 60000); sl.sinceBreak = 0; sl.breakUntil = 0; continue; }
     const it = queue[0]; await sleep(rand(CFG.minDelay, CFG.maxDelay) * 1000);
@@ -149,7 +156,7 @@ async function worker(sl) {
     } catch (e) { err = String(e.message || e).slice(0, 120); }
     queue.shift();
     DATA.results.push({ seq: ++DATA.seq, id: it.id, to: it.to, ok, err, ts: new Date().toISOString() }); sl.seen.add(it.id);
-    if (ok) { DATA.sentToday++; sl.sinceBreak++; }
+    if (ok) { DATA.sentToday++; sl.sinceBreak++; contarEnvio(sl.email); }
     saveData(sl); log(sl.email, ok ? "enviado a" : "NO enviado a", it.to, err);
   }
   sl.running = false;
@@ -171,6 +178,24 @@ async function whoIs(req) {
   } catch { return null; }
 }
 
+/* ----- Empresa del vendedor: pausa, topes y conteo (Supabase) ----- */
+const accCache = new Map();
+async function acceso(email) {
+  if (MOCK && !process.env.ACCESO) return { permitido: true, sin_empresa: true };
+  const c = accCache.get(email); if (c && c.exp > Date.now()) return c.v;
+  let v;
+  try { v = await rpc("puente_acceso", { p_email: email }); }
+  catch (e) { v = c ? c.v : { permitido: true, sin_empresa: true }; log("No pude revisar la empresa de", email, e.message); } /* si Supabase falla, no corta el servicio */
+  accCache.set(email, { v, exp: Date.now() + 60000 }); return v || { permitido: true, sin_empresa: true };
+}
+const porContar = new Map();
+function contarEnvio(email) {
+  porContar.set(email, (porContar.get(email) || 0) + 1);
+  const a = accCache.get(email); if (a && a.v) { a.v.usados_total = (a.v.usados_total || 0) + 1; a.v.usados_hoy = (a.v.usados_hoy || 0) + 1; }
+}
+setInterval(async () => { for (const [email, n] of porContar) { porContar.delete(email); try { await rpc("puente_contar_envios", { p_email: email, p_n: n }); } catch (e) { porContar.set(email, (porContar.get(email) || 0) + n); } } }, 15000);
+const restantes = a => a && a.tope_total ? Math.max(0, a.tope_total - (a.usados_total || 0)) : Infinity;
+
 /* ----- API para la app ----- */
 const FAILS = {};
 const send = (res, code, obj) => { const b = JSON.stringify(obj); res.writeHead(code, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(b) }); res.end(b); };
@@ -189,7 +214,9 @@ const server = http.createServer(async (req, res) => {
   if (fl.length >= 20) return send(res, 429, { error: "demasiados intentos" });
   const email = await whoIs(req);
   if (!email) { fl.push(now); return send(res, 401, { error: "sesion" }); }
-  const sl = seller(email); const { st, DATA, queue } = sl;
+  const acc = await acceso(email);
+  if (!acc.permitido) return send(res, 403, { error: "pausado", motivo: acc.motivo || "Cuenta pausada" });
+  const sl = seller(email); sl.acc = acc; const { st, DATA, queue } = sl;
   try {
     if (u.pathname === "/sync") {
       startWA(sl);
@@ -209,13 +236,13 @@ const server = http.createServer(async (req, res) => {
       catch (e) { log(sl.email, "pair error", e.message); return send(res, 200, { error: "No se pudo generar el código. Pulse Reintentar." }); }
     }
     if (u.pathname === "/send" && req.method === "POST") {
-      const b = await body(req); let n = 0;
-      for (const it of (b.items || [])) { if (!it || !it.id || !it.to || !it.text || sl.seen.has(it.id) || queue.some(q => q.id === it.id)) continue; queue.push({ id: String(it.id), to: digits(it.to), text: String(it.text).slice(0, 3500) }); n++; }
-      worker(sl); return send(res, 200, { queued: n, pending: queue.length });
+      const b = await body(req); let n = 0, libre = restantes(acc) - queue.length, cortados = 0;
+      for (const it of (b.items || [])) { if (n >= libre) { cortados++; continue; } if (!it || !it.id || !it.to || !it.text || sl.seen.has(it.id) || queue.some(q => q.id === it.id)) continue; queue.push({ id: String(it.id), to: digits(it.to), text: String(it.text).slice(0, 3500) }); n++; }
+      worker(sl); return send(res, 200, { queued: n, pending: queue.length, tope: cortados ? "Su plan permite " + acc.tope_total + " envíos en total; " + cortados + " quedaron fuera." : undefined });
     }
     if (u.pathname === "/cancel" && req.method === "POST") { const b = await body(req); const before = queue.length; if (b.all) queue.length = 0; else { const ids = new Set(b.ids || []); for (let i = queue.length - 1; i >= 0; i--) if (ids.has(queue[i].id)) queue.splice(i, 1); } return send(res, 200, { removed: before - queue.length }); }
     if (u.pathname === "/pause" && req.method === "POST") { const b = await body(req); sl.paused = !!b.paused; return send(res, 200, { paused: sl.paused }); }
-    if (u.pathname === "/config" && req.method === "POST") { const b = await body(req); for (const k of ["minDelay", "maxDelay", "batch", "pauseMin", "dailyCap"]) if (+b[k] > 0) CFG[k] = Math.min(+b[k], k === "dailyCap" ? 1000 : 600); if (CFG.maxDelay < CFG.minDelay) CFG.maxDelay = CFG.minDelay; saveCfg(); return send(res, 200, { ok: true }); }
+    if (u.pathname === "/config" && req.method === "POST") { if (acc.rol && acc.rol !== "admin") return send(res, 403, { error: "Solo el administrador puede cambiar esto." }); const b = await body(req); for (const k of ["minDelay", "maxDelay", "batch", "pauseMin", "dailyCap"]) if (+b[k] > 0) CFG[k] = Math.min(+b[k], k === "dailyCap" ? 1000 : 600); if (CFG.maxDelay < CFG.minDelay) CFG.maxDelay = CFG.minDelay; saveCfg(); return send(res, 200, { ok: true }); }
     if (u.pathname === "/logout" && req.method === "POST") { sl.gen++; try { if (sl.sock) await sl.sock.logout(); } catch { } try { fs.rmSync(sl.auth, { recursive: true, force: true }); } catch { } sl.started = false; sl.st.state = "off"; sl.st.me = ""; sl.st.qr = null; persist(sl, true); if (!MOCK) setTimeout(() => startWA(sl), 500); return send(res, 200, { ok: true }); }
     if (MOCK && u.pathname === "/mock/reply" && req.method === "POST") { const b = await body(req); addReply(sl, digits(b.from), b.text || "Hola, me interesa", ""); return send(res, 200, { ok: true }); }
     send(res, 404, { error: "no" });
@@ -227,7 +254,7 @@ let publicUrl = (process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || ""
 async function publish() {
   if (!publicUrl || MOCK && !process.env.PUBLISH) return;
   try {
-    const r = await fetch(CFG.supabaseUrl + "/rest/v1/rpc/set_bridge_url", { method: "POST", headers: { apikey: CFG.supabaseKey, Authorization: "Bearer " + CFG.supabaseKey, "Content-Type": "application/json" }, body: JSON.stringify({ secret: CFG.secret, url: publicUrl }) });
+    const r = await fetch(CFG.supabaseUrl + "/rest/v1/rpc/set_bridge_url", { method: "POST", headers: DB_HEADERS, body: JSON.stringify({ secret: CFG.secret, url: publicUrl }) });
     if (!r.ok) log("No pude publicar la dirección (¿ejecutó 02_puente.sql en Supabase?)", r.status);
   } catch (e) { log("Sin internet para publicar la dirección"); }
 }
@@ -247,6 +274,7 @@ setInterval(publish, 60000);
 server.listen(PORT, HOST, () => {
   console.log("\n==============================================");
   console.log(" Puente de WhatsApp activo" + (MOCK ? " (MODO PRUEBA, sin WhatsApp real)" : ""));
+  console.log(" Llave de servicio: " + (SERVICE_KEY ? "sí (modo seguro)" : "NO (falta llave-servicio.txt)"));
   console.log(" Correos permitidos: " + (CFG.allowed.includes("*") ? "cualquier correo con cuenta en la app" : CFG.allowed.join(", ")));
   console.log(" Deje esta ventana abierta durante el horario de trabajo.");
   console.log(" Los vendedores solo abren la app y pulsan «Conectar WhatsApp».");

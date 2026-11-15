@@ -117,10 +117,14 @@ async function startWA(sl) {
     sock.ev.on("messages.upsert", ({ messages, type }) => {
       if (type !== "notify") return;
       for (const m of messages) {
-        if (!m.message || m.key.fromMe) continue;
+        if (!m.message) continue;
         const jid = m.key.remoteJid || ""; if (jid.endsWith("@g.us") || jid === "status@broadcast" || jid.endsWith("@newsletter")) continue;
         const alt = m.key.senderPn || m.key.remoteJidAlt || ""; const num = digits((alt || jid).split("@")[0]);
         const msg = m.message, text = msg.conversation || (msg.extendedTextMessage && msg.extendedTextMessage.text) || (msg.imageMessage && msg.imageMessage.caption) || (msg.buttonsResponseMessage && msg.buttonsResponseMessage.selectedDisplayText) || "[archivo o audio]";
+        if (m.key.fromMe) { /* lo que el vendedor escribe desde su teléfono: solo para la bandeja de la app nueva (la pide con me=1) */
+          try { if (text && text !== "[archivo o audio]" && num && !(sl.mine && sl.mine.has(m.key.id))) { sl.DATA.replies.push({ seq: ++sl.DATA.rseq, from: num, jid, text: String(text).slice(0, 500), ts: new Date().toISOString(), me: true }); saveData(sl); } } catch { }
+          continue;
+        }
         addReply(sl, num, text, jid);
       }
     });
@@ -150,7 +154,7 @@ async function worker(sl) {
         if (!r || !r[0] || !r[0].exists) err = "Ese número no tiene WhatsApp.";
         else {
           try { await sock.presenceSubscribe(r[0].jid); await sock.sendPresenceUpdate("composing", r[0].jid); await sleep(rand(1200, 3500) + it.text.length * 25); await sock.sendPresenceUpdate("paused", r[0].jid); } catch { }
-          await sock.sendMessage(r[0].jid, { text: it.text }); ok = true;
+          const sent = await sock.sendMessage(r[0].jid, { text: it.text }); ok = true; try { (sl.mine = sl.mine || new Set()).add(sent.key.id); if (sl.mine.size > 2000) sl.mine.clear(); } catch { }
         }
       }
     } catch (e) { err = String(e.message || e).slice(0, 120); }
@@ -222,7 +226,7 @@ const server = http.createServer(async (req, res) => {
       startWA(sl);
       const r = +u.searchParams.get("r") || 0, p = +u.searchParams.get("p") || 0;
       if (p > 0) { const n0 = DATA.replies.length; DATA.replies = DATA.replies.filter(x => x.seq > p || Date.now() - Date.parse(x.ts) < 3600000); if (DATA.replies.length !== n0) saveData(sl); } /* privacidad: no se guardan respuestas ya recibidas por la app */
-      return send(res, 200, { state: st.state, qr: st.qr, me: st.me, err: st.err, pending: queue.length, sentToday: DATA.sentToday, cap: CFG.dailyCap, paused: sl.paused, breakIn: sl.breakUntil ? Math.max(0, Math.round((sl.breakUntil - Date.now()) / 1000)) : 0, cfg: { minDelay: CFG.minDelay, maxDelay: CFG.maxDelay, batch: CFG.batch, pauseMin: CFG.pauseMin }, results: DATA.results.filter(x => x.seq > r), replies: DATA.replies.filter(x => x.seq > p), seq: DATA.seq, rseq: DATA.rseq });
+      return send(res, 200, { state: st.state, qr: st.qr, me: st.me, err: st.err, pending: queue.length, sentToday: DATA.sentToday, cap: CFG.dailyCap, paused: sl.paused, breakIn: sl.breakUntil ? Math.max(0, Math.round((sl.breakUntil - Date.now()) / 1000)) : 0, cfg: { minDelay: CFG.minDelay, maxDelay: CFG.maxDelay, batch: CFG.batch, pauseMin: CFG.pauseMin }, results: DATA.results.filter(x => x.seq > r), replies: DATA.replies.filter(x => x.seq > p && (!x.me || u.searchParams.get("me") === "1")), seq: DATA.seq, rseq: DATA.rseq });
     }
     if (u.pathname === "/pair" && req.method === "POST") {
       const b = await body(req), phone = digits(b.phone || "");

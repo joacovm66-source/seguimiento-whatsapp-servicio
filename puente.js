@@ -10,6 +10,7 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import pino from "pino";
 import QRCode from "qrcode";
+import * as SX from "./sigo-extra.mjs";
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const MOCK = process.env.MOCK === "1", FAST = process.env.FAST === "1";
@@ -19,10 +20,10 @@ const F_CFG = path.join(STORE, "config.json"), VEND = path.join(STORE, "vendedor
 fs.mkdirSync(VEND, { recursive: true });
 const readJson = (f, d) => { try { return JSON.parse(fs.readFileSync(f, "utf8")); } catch { return d; } };
 const CFG = Object.assign({
-  minDelay: 8, maxDelay: 25, batch: 20, pauseMin: 5, dailyCap: 150,
+  minDelay: 8, maxDelay: 25, batch: 20, pauseMin: 5, dailyCap: 1000,
   supabaseUrl: "https://mhhthbcmtyifyrutghud.supabase.co",
   supabaseKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1oaHRoYmNtdHlpZnlydXRnaHVkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM0NTc4NTQsImV4cCI6MjA5OTAzMzg1NH0.3-2sOb4W3xx52QHEd3B-2vCCN79Z0vk2cQoU0Hx_a9k",
-  secret: process.env.BRIDGE_SECRET || "",
+  secret: process.env.BRIDGE_SECRET || (() => { try { return fs.readFileSync(path.join(DIR, "clave-puente.txt"), "utf8").trim(); } catch { return ""; } })(),
   allowed: ["*"]
 }, readJson(F_CFG, {}));
 if (process.env.ALLOWED) CFG.allowed = process.env.ALLOWED.split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
@@ -45,7 +46,10 @@ const allowedEmail = e => { e = String(e || "").toLowerCase(); if (CFG.allowed.i
 /* ----- Respaldo en Supabase (para servidores gratis que borran los archivos al reiniciar) ----- */
 const CLOUD_STATE = process.env.CLOUD_STATE === "1" || !!process.env.RENDER;
 async function rpc(name, args) {
-  const r = await fetch(CFG.supabaseUrl + "/rest/v1/rpc/" + name, { method: "POST", headers: DB_HEADERS, body: JSON.stringify(Object.assign({ secret: CFG.secret }, args)) });
+  const full = Object.assign({ secret: CFG.secret }, args);
+  /* Sin llave de servicio en la PC: pasa por la función "puente" de Supabase (solo funciones permitidas; la clave se revisa en la base). */
+  const r = SERVICE_KEY ? await fetch(CFG.supabaseUrl + "/rest/v1/rpc/" + name, { method: "POST", headers: DB_HEADERS, body: JSON.stringify(full) })
+    : await fetch(CFG.supabaseUrl + "/functions/v1/puente", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fn: name, args: full }) });
   if (!r.ok) throw new Error(name + " " + r.status); const t = await r.text(); try { return t ? JSON.parse(t) : null; } catch { return null; }
 }
 const walk = (d, base = "") => { let o = {}; if (!fs.existsSync(d)) return o; for (const f of fs.readdirSync(d, { withFileTypes: true })) { const rel = base ? base + "/" + f.name : f.name, fp = path.join(d, f.name); if (f.isDirectory()) Object.assign(o, walk(fp, rel)); else if (/\.(json)$/.test(f.name)) { try { o[rel] = fs.readFileSync(fp, "utf8"); } catch { } } } return o; };
@@ -84,11 +88,12 @@ function seller(email) {
     st: { state: MOCK ? "open" : "off", qr: null, me: MOCK ? "51900" + String(Math.abs([...email].reduce((a, c) => a * 31 + c.charCodeAt(0), 7)) % 1000000).padStart(6, "0") : "", err: "" } };
   sl.DATA = Object.assign({ seq: 0, rseq: 0, results: [], replies: [], day: "", sentToday: 0 }, readJson(sl.fdata, {}));
   sl.seen = new Set(sl.DATA.results.map(r => r.id));
+  if (Array.isArray(sl.DATA.queue)) sl.queue = sl.DATA.queue; /* la cola se recupera si el puente se reinicia */
   sellers.set(email, sl);
   if (MOCK && process.env.MOCKQR) { sl.st.state = "qr"; sl.st.me = ""; QRCode.toDataURL("demo-qr", { margin: 1, width: 320 }).then(q => { sl.st.qr = q; }); setTimeout(() => { sl.st.state = "open"; sl.st.qr = null; sl.st.me = "51900000000"; }, 9000); }
   return sl;
 }
-const saveData = sl => { persist(sl); sl.DATA.results = sl.DATA.results.slice(-3000); sl.DATA.replies = sl.DATA.replies.slice(-3000); try { fs.writeFileSync(sl.fdata, JSON.stringify(sl.DATA)); } catch { } };
+const saveData = sl => { sl.DATA.queue = sl.queue.slice(0, 5000); persist(sl); sl.DATA.results = sl.DATA.results.slice(-3000); sl.DATA.replies = sl.DATA.replies.slice(-3000); try { fs.writeFileSync(sl.fdata, JSON.stringify(sl.DATA)); } catch { } };
 function addReply(sl, from, text, jid) { sl.DATA.replies.push({ seq: ++sl.DATA.rseq, from, jid: jid || "", text: String(text).slice(0, 500), ts: new Date().toISOString() }); saveData(sl); log(sl.email, "← respuesta de", from); }
 
 async function startWA(sl) {
@@ -104,7 +109,7 @@ async function startWA(sl) {
     sock.ev.on("connection.update", async u => {
       if (gen !== sl.gen) return;
       if (u.qr) { sl.st.state = "qr"; sl.st.qr = await QRCode.toDataURL(u.qr, { margin: 2, scale: 6, errorCorrectionLevel: "M" }); log(sl.email, "espera que escaneen el QR"); }
-      if (u.connection === "open") { sl.st.state = "open"; sl.st.qr = null; sl.st.err = ""; sl.st.me = digits((sock.user && sock.user.id || "").split(":")[0].split("@")[0]); log(sl.email, "WhatsApp conectado:", sl.st.me); }
+      if (u.connection === "open") { sl.st.state = "open"; sl.st.qr = null; sl.st.err = ""; sl.st.me = digits((sock.user && sock.user.id || "").split(":")[0].split("@")[0]); log(sl.email, "WhatsApp conectado:", sl.st.me); if (sl.queue.length) worker(sl); }
       if (u.connection === "close") {
         const code = u.lastDisconnect && u.lastDisconnect.error && u.lastDisconnect.error.output && u.lastDisconnect.error.output.statusCode;
         log(sl.email, "conexión cerrada, código", code, String(u.lastDisconnect && u.lastDisconnect.error && u.lastDisconnect.error.message || "").slice(0, 120));
@@ -114,13 +119,13 @@ async function startWA(sl) {
         else { sl.st.err = "Reconectando…"; setTimeout(() => startWA(sl), 3000); }
       }
     });
-    sock.ev.on("messages.upsert", ({ messages, type }) => {
+    sock.ev.on("messages.upsert", async ({ messages, type }) => {
       if (type !== "notify") return;
       for (const m of messages) {
         if (!m.message) continue;
         const jid = m.key.remoteJid || ""; if (jid.endsWith("@g.us") || jid === "status@broadcast" || jid.endsWith("@newsletter")) continue;
-        const alt = m.key.senderPn || m.key.remoteJidAlt || ""; const num = digits((alt || jid).split("@")[0]);
-        const msg = m.message, text = msg.conversation || (msg.extendedTextMessage && msg.extendedTextMessage.text) || (msg.imageMessage && msg.imageMessage.caption) || (msg.buttonsResponseMessage && msg.buttonsResponseMessage.selectedDisplayText) || "[archivo o audio]";
+        const num = await SX.numero(sl, sock, m, jid);
+        const msg = m.message, __sx = await SX.media(sl, m, B), text = __sx || msg.conversation || (msg.extendedTextMessage && msg.extendedTextMessage.text) || (msg.imageMessage && msg.imageMessage.caption) || (msg.buttonsResponseMessage && msg.buttonsResponseMessage.selectedDisplayText) || "[archivo o audio]";
         if (m.key.fromMe) { /* lo que el vendedor escribe desde su teléfono: solo para la bandeja de la app nueva (la pide con me=1) */
           try { if (text && text !== "[archivo o audio]" && num && !(sl.mine && sl.mine.has(m.key.id))) { sl.DATA.replies.push({ seq: ++sl.DATA.rseq, from: num, jid, text: String(text).slice(0, 500), ts: new Date().toISOString(), me: true }); saveData(sl); } } catch { }
           continue;
@@ -143,14 +148,14 @@ async function worker(sl) {
     if (DATA.sentToday >= capHoy) { st.err = "Se alcanzó el tope diario (" + capHoy + "). Continúa mañana."; await sleep(60000); continue; }
     st.err = "";
     if (sl.sinceBreak >= CFG.batch) { sl.breakUntil = Date.now() + CFG.pauseMin * 60000; log(sl.email, "descanso", CFG.pauseMin, "min"); await sleep(CFG.pauseMin * 60000); sl.sinceBreak = 0; sl.breakUntil = 0; continue; }
-    const it = queue[0]; await sleep(rand(CFG.minDelay, CFG.maxDelay) * 1000);
+    SX.priorizar(queue); const it = queue[0]; await sleep(SX.esManual(queue[0]) ? 1500 : rand(CFG.minDelay, CFG.maxDelay) * 1000);
     if (queue[0] !== it) continue;
     let ok = false, err = "";
     try {
       const to = digits(it.to);
       if (MOCK) { ok = true; }
       else {
-        const sock = sl.sock, r = await sock.onWhatsApp(to + "@s.whatsapp.net");
+        const sock = sl.sock, r = await SX.destino(sl, sock, it.to);
         if (!r || !r[0] || !r[0].exists) err = "Ese número no tiene WhatsApp.";
         else {
           try { await sock.presenceSubscribe(r[0].jid); await sock.sendPresenceUpdate("composing", r[0].jid); await sleep(rand(1200, 3500) + it.text.length * 25); await sock.sendPresenceUpdate("paused", r[0].jid); } catch { }
@@ -213,6 +218,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "OPTIONS") { res.writeHead(204); return res.end(); }
   const u = new URL(req.url, "http://x");
   if (u.pathname === "/ping") return send(res, 200, { ok: true, app: "puente-whatsapp", v: 2, mock: MOCK });
+  if (u.pathname.startsWith("/m/")) return SX.servir(req, res, u);
   if ((u.pathname === "/" || u.pathname === "/index.html") && fs.existsSync(APP)) { const b = fs.readFileSync(APP); res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Content-Length": b.length, "Cache-Control": "no-cache" }); return res.end(b); }
   const ip = (req.headers["cf-connecting-ip"] || req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").split(",")[0].trim(), now = Date.now(), fl = (FAILS[ip] = (FAILS[ip] || []).filter(t => now - t < 60000));
   if (fl.length >= 20) return send(res, 429, { error: "demasiados intentos" });
@@ -222,6 +228,7 @@ const server = http.createServer(async (req, res) => {
   if (!acc.permitido) return send(res, 403, { error: "pausado", motivo: acc.motivo || "Cuenta pausada" });
   const sl = seller(email); sl.acc = acc; const { st, DATA, queue } = sl;
   try {
+    if (u.pathname === "/archivo" && req.method === "POST") return SX.enviarArchivo(req, res, sl, send);
     if (u.pathname === "/sync") {
       startWA(sl);
       const r = +u.searchParams.get("r") || 0, p = +u.searchParams.get("p") || 0;
@@ -258,8 +265,7 @@ let publicUrl = (process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || ""
 async function publish() {
   if (!publicUrl || MOCK && !process.env.PUBLISH) return;
   try {
-    const r = await fetch(CFG.supabaseUrl + "/rest/v1/rpc/set_bridge_url", { method: "POST", headers: DB_HEADERS, body: JSON.stringify({ secret: CFG.secret, url: publicUrl }) });
-    if (!r.ok) log("No pude publicar la dirección (¿ejecutó 02_puente.sql en Supabase?)", r.status);
+    await rpc("set_bridge_url", { url: publicUrl });
   } catch (e) { log("Sin internet para publicar la dirección"); }
 }
 async function openTunnel() {
@@ -278,7 +284,7 @@ setInterval(publish, 60000);
 server.listen(PORT, HOST, () => {
   console.log("\n==============================================");
   console.log(" Puente de WhatsApp activo" + (MOCK ? " (MODO PRUEBA, sin WhatsApp real)" : ""));
-  console.log(" Llave de servicio: " + (SERVICE_KEY ? "sí (modo seguro)" : "NO (falta llave-servicio.txt)"));
+  console.log(" Conexión con Sigo: " + (CFG.secret ? "lista" : "FALTA clave-puente.txt (pídela a Claude)"));
   console.log(" Correos permitidos: " + (CFG.allowed.includes("*") ? "cualquier correo con cuenta en la app" : CFG.allowed.join(", ")));
   console.log(" Deje esta ventana abierta durante el horario de trabajo.");
   console.log(" Los vendedores solo abren la app y pulsan «Conectar WhatsApp».");
@@ -287,6 +293,6 @@ server.listen(PORT, HOST, () => {
   (async () => { await restoreAll(); if (!MOCK) for (const d of fs.readdirSync(VEND)) { try { if (fs.existsSync(path.join(VEND, d, "sesion", "creds.json"))) { const m = readJson(path.join(VEND, d, "email.json"), null); if (m && m.email) startWA(seller(m.email)); } } catch { } } })();
 });
 /* recordar el correo de cada carpeta para reconectar al reiniciar */
-setInterval(() => { for (const sl of sellers.values()) { try { fs.writeFileSync(path.join(sl.dir, "email.json"), JSON.stringify({ email: sl.email })); } catch { } } }, 5000);
+setInterval(() => { for (const sl of sellers.values()) { try { fs.writeFileSync(path.join(sl.dir, "email.json"), JSON.stringify({ email: sl.email })); sl.DATA.queue = sl.queue.slice(0, 5000); fs.writeFileSync(sl.fdata, JSON.stringify(sl.DATA)); } catch { } } }, 5000);
 process.on("uncaughtException", e => console.error("Error:", e.message));
 process.on("unhandledRejection", e => console.error("Aviso:", e && e.message));

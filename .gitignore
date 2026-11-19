@@ -1,0 +1,11 @@
+node_modules/
+vendedores/
+media/
+datos/
+clave-puente.txt
+llave-servicio.txt
+config.json
+lids.json
+package.instalado
+*.nuevo
+puente-antes-*.js

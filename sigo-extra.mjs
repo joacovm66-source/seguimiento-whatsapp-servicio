@@ -30,10 +30,31 @@ export async function numero(sl, sock, m, jid) {
   const real = digits(String(pn).split("@")[0].split(":")[0]);
   if (String(jid).endsWith("@lid")) {
     const lid = digits(String(jid).split("@")[0]);
-    if (real) { LIDS[lid] = jid; guardarLids(); return real; }
+    if (real) { LIDS[lid] = jid; LIDS["r" + lid] = real; guardarLids(); return real; }
     LIDS[lid] = jid; guardarLids(); return lid; // sin número real: se responde por el identificador
   }
   return real || digits(String(jid).split("@")[0]);
+}
+
+/* Número para mostrar a partir de un jid (normal u oculto) */
+export function numeroDeJid(jid) {
+  const j = String(jid || ""), d = digits(j.split("@")[0].split(":")[0]);
+  if (j.endsWith("@lid")) return LIDS["r" + d] || d;
+  return d;
+}
+
+/* Lo que el vendedor lee en su celular se marca como leído en Sigo */
+export function escucharLeidos(sl, sock, avisar) {
+  const ult = new Map();
+  const leer = (jid) => {
+    if (!jid || /@g\.us$|status@|@newsletter$/.test(jid)) return;
+    const num = numeroDeJid(jid); if (!num) return;
+    const t = Date.now(); if (t - (ult.get(num) || 0) < 4000) return; ult.set(num, t);
+    avisar(num, new Date().toISOString());
+  };
+  sock.ev.on("chats.update", (lista) => { for (const c of lista || []) if (c && c.unreadCount === 0) leer(c.id); });
+  sock.ev.on("message-receipt.update", (lista) => { for (const u of lista || []) { const k = u.key || {}; if (!k.fromMe && u.receipt && u.receipt.readTimestamp) leer(k.remoteJid); } });
+  sock.ev.on("messages.update", (lista) => { for (const u of lista || []) { const k = u.key || {}; if (!k.fromMe && u.update && u.update.status === 4) leer(k.remoteJid); } });
 }
 
 /* Destino para enviar: número normal, identificador oculto o jid directo */
@@ -110,4 +131,22 @@ export async function enviarArchivo(req, res, sl, send) {
     try { fs.writeFileSync(path.join(MDIR, name), buf); } catch { }
     return send(res, 200, { ok: true, archivo: name, ts: new Date().toISOString() });
   } catch (e) { return send(res, 200, { ok: false, error: String(e.message || e).slice(0, 120) }); }
+}
+
+/* Actualización sola: cada 10 min revisa GitHub; si hay versión nueva y no hay envíos en curso, se cierra y INICIAR.bat la descarga y vuelve a abrir */
+export function autoActualizar(ocupado, log) {
+  const base = "https://raw.githubusercontent.com/joacovm66-source/seguimiento-whatsapp-servicio/main/";
+  const local = f => { try { return fs.readFileSync(path.join(DIR, f), "utf8").replace(/\r/g, ""); } catch { return ""; } };
+  setInterval(async () => {
+    try {
+      for (const f of ["puente.js", "sigo-extra.mjs"]) {
+        const r = await fetch(base + f + "?t=" + Date.now()); if (!r.ok) return;
+        const t = (await r.text()).replace(/\r/g, "");
+        if (t.length > 1000 && t !== local(f)) {
+          if (ocupado()) return;
+          log("Hay una versión nueva del puente. Reiniciando para actualizar…"); setTimeout(() => process.exit(0), 1500); return;
+        }
+      }
+    } catch { }
+  }, 10 * 60 * 1000);
 }

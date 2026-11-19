@@ -89,6 +89,8 @@ function seller(email) {
   sl.DATA = Object.assign({ seq: 0, rseq: 0, results: [], replies: [], day: "", sentToday: 0 }, readJson(sl.fdata, {}));
   sl.seen = new Set(sl.DATA.results.map(r => r.id));
   if (Array.isArray(sl.DATA.queue)) sl.queue = sl.DATA.queue; /* la cola se recupera si el puente se reinicia */
+  /* Números de mensaje basados en la hora: si el puente se reinstala, la app no se queda esperando números viejos */
+  if (sl.DATA.rseq < 1e9 || sl.DATA.seq < 1e9) { const base = Math.floor(Date.now() / 1000); sl.DATA.replies.forEach(x => { x.seq += base; }); sl.DATA.results.forEach(x => { x.seq += base; }); sl.DATA.rseq += base; sl.DATA.seq += base; }
   sellers.set(email, sl);
   if (MOCK && process.env.MOCKQR) { sl.st.state = "qr"; sl.st.me = ""; QRCode.toDataURL("demo-qr", { margin: 1, width: 320 }).then(q => { sl.st.qr = q; }); setTimeout(() => { sl.st.state = "open"; sl.st.qr = null; sl.st.me = "51900000000"; }, 9000); }
   return sl;
@@ -119,6 +121,7 @@ async function startWA(sl) {
         else { sl.st.err = "Reconectando…"; setTimeout(() => startWA(sl), 3000); }
       }
     });
+    SX.escucharLeidos(sl, sock, (num, ts) => { sl.DATA.replies.push({ seq: ++sl.DATA.rseq, from: num, read: true, text: "", ts }); saveData(sl); });
     sock.ev.on("messages.upsert", async ({ messages, type }) => {
       if (type !== "notify") return;
       for (const m of messages) {
@@ -231,7 +234,8 @@ const server = http.createServer(async (req, res) => {
     if (u.pathname === "/archivo" && req.method === "POST") return SX.enviarArchivo(req, res, sl, send);
     if (u.pathname === "/sync") {
       startWA(sl);
-      const r = +u.searchParams.get("r") || 0, p = +u.searchParams.get("p") || 0;
+      let r = +u.searchParams.get("r") || 0, p = +u.searchParams.get("p") || 0;
+      if (p > DATA.rseq) p = 0; if (r > DATA.seq) r = 0; /* la app va adelantada (puente reinstalado): mandarle todo */
       if (p > 0) { const n0 = DATA.replies.length; DATA.replies = DATA.replies.filter(x => x.seq > p || Date.now() - Date.parse(x.ts) < 3600000); if (DATA.replies.length !== n0) saveData(sl); } /* privacidad: no se guardan respuestas ya recibidas por la app */
       return send(res, 200, { state: st.state, qr: st.qr, me: st.me, err: st.err, pending: queue.length, sentToday: DATA.sentToday, cap: CFG.dailyCap, paused: sl.paused, breakIn: sl.breakUntil ? Math.max(0, Math.round((sl.breakUntil - Date.now()) / 1000)) : 0, cfg: { minDelay: CFG.minDelay, maxDelay: CFG.maxDelay, batch: CFG.batch, pauseMin: CFG.pauseMin }, results: DATA.results.filter(x => x.seq > r), replies: DATA.replies.filter(x => x.seq > p && (!x.me || u.searchParams.get("me") === "1")), seq: DATA.seq, rseq: DATA.rseq });
     }
@@ -290,6 +294,7 @@ server.listen(PORT, HOST, () => {
   console.log(" Los vendedores solo abren la app y pulsan «Conectar WhatsApp».");
   console.log("==============================================\n");
   openTunnel(); publish();
+  if (!MOCK) SX.autoActualizar(() => [...sellers.values()].some(x => x.running && x.queue.length), (...a) => log(...a));
   (async () => { await restoreAll(); if (!MOCK) for (const d of fs.readdirSync(VEND)) { try { if (fs.existsSync(path.join(VEND, d, "sesion", "creds.json"))) { const m = readJson(path.join(VEND, d, "email.json"), null); if (m && m.email) startWA(seller(m.email)); } } catch { } } })();
 });
 /* recordar el correo de cada carpeta para reconectar al reiniciar */

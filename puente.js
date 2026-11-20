@@ -142,6 +142,13 @@ async function startWA(sl) {
 }
 
 /* ----- Cola de envío con pausas (cuida cada número) ----- */
+/* foto o video de una difusión (se descarga una vez y se reutiliza) */
+const MEDIA_CACHE = new Map();
+async function mediaMsg(it) {
+  let buf = MEDIA_CACHE.get(it.media.url);
+  if (!buf) { const r = await fetch(it.media.url); if (!r.ok) throw new Error("No se pudo bajar el archivo de la difusión"); buf = Buffer.from(await r.arrayBuffer()); if (MEDIA_CACHE.size > 5) MEDIA_CACHE.clear(); MEDIA_CACHE.set(it.media.url, buf); }
+  return /^video\//.test(it.media.mime) ? { video: buf, mimetype: it.media.mime, caption: it.text } : { image: buf, mimetype: it.media.mime, caption: it.text };
+}
 async function worker(sl) {
   if (sl.running) return; sl.running = true;
   const { st, queue, DATA } = sl;
@@ -164,7 +171,7 @@ async function worker(sl) {
         if (!r || !r[0] || !r[0].exists) err = "Ese número no tiene WhatsApp.";
         else {
           try { await sock.presenceSubscribe(r[0].jid); await sock.sendPresenceUpdate("composing", r[0].jid); await sleep(rand(1200, 3500) + it.text.length * 25); await sock.sendPresenceUpdate("paused", r[0].jid); } catch { }
-          const sent = await sock.sendMessage(r[0].jid, { text: it.text }); ok = true; try { (sl.mine = sl.mine || new Set()).add(sent.key.id); if (sl.mine.size > 2000) sl.mine.clear(); } catch { }
+          const sent = await sock.sendMessage(r[0].jid, it.media ? await mediaMsg(it) : { text: it.text }); ok = true; try { (sl.mine = sl.mine || new Set()).add(sent.key.id); if (sl.mine.size > 2000) sl.mine.clear(); } catch { }
         }
       }
     } catch (e) { err = String(e.message || e).slice(0, 120); }
@@ -255,7 +262,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (u.pathname === "/send" && req.method === "POST") {
       const b = await body(req); let n = 0, libre = restantes(acc) - queue.length, cortados = 0;
-      for (const it of (b.items || [])) { if (n >= libre) { cortados++; continue; } if (!it || !it.id || !it.to || !it.text || sl.seen.has(it.id) || queue.some(q => q.id === it.id)) continue; queue.push({ id: String(it.id), to: digits(it.to), text: String(it.text).slice(0, 3500) }); n++; }
+      for (const it of (b.items || [])) { if (n >= libre) { cortados++; continue; } if (!it || !it.id || !it.to || !it.text || sl.seen.has(it.id) || queue.some(q => q.id === it.id)) continue; const med = it.media && /^https:\/\/[a-z0-9]+\.supabase\.co\/storage\/v1\/object\/public\/difusion\//.test(String(it.media.url || "")) && /^(image|video)\//.test(String(it.media.mime || "")) ? { url: String(it.media.url), mime: String(it.media.mime) } : undefined; queue.push({ id: String(it.id), to: digits(it.to), text: String(it.text).slice(0, 3500), media: med }); n++; }
       worker(sl); return send(res, 200, { queued: n, pending: queue.length, tope: cortados ? "Su plan permite " + acc.tope_total + " envíos en total; " + cortados + " quedaron fuera." : undefined });
     }
     if (u.pathname === "/cancel" && req.method === "POST") { const b = await body(req); const before = queue.length; if (b.all) queue.length = 0; else { const ids = new Set(b.ids || []); for (let i = queue.length - 1; i >= 0; i--) if (ids.has(queue[i].id)) queue.splice(i, 1); } return send(res, 200, { removed: before - queue.length }); }

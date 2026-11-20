@@ -287,6 +287,8 @@ async function openTunnel() {
   } catch (e) { log("No pude abrir el túnel:", e.message); setTimeout(openTunnel, 30000); }
 }
 setInterval(publish, 60000);
+/* Presencia: cada 30 s avisa a Sigo qué vendedores tienen su WhatsApp conectado (el jefe lo ve en tiempo real). */
+setInterval(async () => { if (MOCK) return; const l = [...sellers.values()].map(sl => ({ email: sl.email, state: sl.st.state, me: sl.st.me || "" })); if (l.length) { try { await rpc("puente_presencia", { p_lista: l }); } catch { } } }, 30000);
 
 server.listen(PORT, HOST, () => {
   console.log("\n==============================================");

@@ -115,7 +115,7 @@ async function startWA(sl) {
       if (u.connection === "close") {
         const code = u.lastDisconnect && u.lastDisconnect.error && u.lastDisconnect.error.output && u.lastDisconnect.error.output.statusCode;
         log(sl.email, "conexión cerrada, código", code, String(u.lastDisconnect && u.lastDisconnect.error && u.lastDisconnect.error.message || "").slice(0, 120));
-        sl.st.state = "off"; sl.st.qr = null; sl.st.me = ""; sl.started = false;
+        sl.st.state = "off"; sl.st.qr = null; sl.st.me = ""; sl.started = false; SX.vigiaCierre(sl, code);
         if (code === 403) { sl.st.err = "WhatsApp restringió este número. No envíe más por ahora y revise el teléfono."; log(sl.email, "NÚMERO RESTRINGIDO por WhatsApp"); sl.paused = true; return; }
         if (code === B.DisconnectReason.loggedOut) { try { fs.rmSync(sl.auth, { recursive: true, force: true }); } catch { } log(sl.email, "sesión cerrada desde el teléfono"); sl.st.err = "Se cerró la sesión desde el teléfono. Escanee otra vez."; }
         else { sl.st.err = "Reconectando…"; setTimeout(() => startWA(sl), 3000); }
@@ -307,10 +307,11 @@ server.listen(PORT, HOST, () => {
   console.log("==============================================\n");
   SX.config({ url: CFG.supabaseUrl, secret: CFG.secret });
   openTunnel(); publish();
+  if (!MOCK) SX.vigia({ sellers: () => sellers.values(), cfg: CFG, publicUrl: () => publicUrl, restantes, log });
   if (!MOCK) SX.autoActualizar(() => [...sellers.values()].some(x => x.running && x.queue.length), (...a) => log(...a));
   (async () => { await restoreAll(); if (!MOCK) for (const d of fs.readdirSync(VEND)) { try { if (fs.existsSync(path.join(VEND, d, "sesion", "creds.json"))) { const m = readJson(path.join(VEND, d, "email.json"), null); if (m && m.email) startWA(seller(m.email)); } } catch { } } })();
 });
 /* recordar el correo de cada carpeta para reconectar al reiniciar */
 setInterval(() => { for (const sl of sellers.values()) { try { fs.writeFileSync(path.join(sl.dir, "email.json"), JSON.stringify({ email: sl.email })); sl.DATA.queue = sl.queue.slice(0, 5000); fs.writeFileSync(sl.fdata, JSON.stringify(sl.DATA)); } catch { } } }, 5000);
-process.on("uncaughtException", e => console.error("Error:", e.message));
-process.on("unhandledRejection", e => console.error("Aviso:", e && e.message));
+process.on("uncaughtException", e => { console.error("Error:", e.message); SX.vigiaError(e); });
+process.on("unhandledRejection", e => { console.error("Aviso:", e && e.message); SX.vigiaError(e); });

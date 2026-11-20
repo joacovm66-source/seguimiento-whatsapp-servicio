@@ -4,6 +4,7 @@
    3. Respuestas desde la Bandeja (id "m:..."): pasan primero en la cola y sin la espera larga de campañas.
    4. /archivo: el vendedor envía fotos, PDF, audios o videos desde la Bandeja. */
 import fs from "node:fs";
+import os from "node:os";
 import { Buffer } from "node:buffer";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -366,4 +367,111 @@ export function atencion(sl, sock) {
     }
   });
   if (!sl.avisosT) sl.avisosT = setInterval(() => enviarAvisos(sl), 60000);
+}
+
+/* ======================= Vigía: avisa al dueño por Telegram y WhatsApp =======================
+   Revisa cada minuto el estado de cada vendedor y avisa ANTES de que algo se rompa
+   (reconexiones seguidas, fallos que suben, tope cerca, poca memoria) y cuando algo ya falló.
+   Configuración (opcional) en "alertas.txt" junto a INICIAR.bat:
+     línea 1: token del bot de Telegram (de @BotFather)
+     línea 2: número de WhatsApp que recibe los avisos (por defecto el del dueño)
+   El chat de Telegram se detecta solo: basta escribirle /start al bot. */
+const VG = { tok: "", chat: "", wa: "51967664627", from: "ajvillal@trener.edu.pe", ult: new Map(), errores: [], s: new Map(), offset: 0, sinUrl: 0, resumen: "" };
+const F_ALE = path.join(DIR, "alertas.txt"), F_CHAT = path.join(STORE, "datos-alertas-chat.txt");
+function vgLeer() {
+  try { const l = fs.readFileSync(F_ALE, "utf8").split(/\r?\n/).map(x => x.trim()); VG.tok = l[0] || ""; if (/^\+?\d{9,15}$/.test((l[1] || "").replace(/\s/g, ""))) VG.wa = l[1].replace(/\D/g, ""); } catch { VG.tok = ""; }
+  try { VG.chat = fs.readFileSync(F_CHAT, "utf8").trim(); } catch { }
+}
+async function tg(metodo, datos) {
+  if (!VG.tok) return null;
+  try { const r = await fetch("https://api.telegram.org/bot" + VG.tok + "/" + metodo, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(datos || {}) }); return await r.json(); } catch { return null; }
+}
+async function vgChat() { /* detecta el chat del dueño cuando le escribe al bot */
+  if (!VG.tok || VG.chat) return;
+  const r = await tg("getUpdates", { offset: VG.offset, timeout: 0 });
+  for (const u of (r && r.result) || []) { VG.offset = u.update_id + 1; const c = u.message && u.message.chat; if (c && c.id) { VG.chat = String(c.id); try { fs.writeFileSync(F_CHAT, VG.chat); } catch { } await tg("sendMessage", { chat_id: VG.chat, text: "✅ Listo. Desde ahora el puente de Sigo te avisa aquí si algo falla o está por fallar." }); } }
+}
+let VCTX = null;
+async function enviarAviso(texto) {
+  if (VG.tok && VG.chat) await tg("sendMessage", { chat_id: VG.chat, text: texto });
+  try { /* por WhatsApp, desde la línea del dueño (si está conectada) */
+    const sl = VCTX && [...VCTX.sellers()].find(x => x.email === VG.from && x.st.state === "open" && x.sock);
+    if (sl && VG.wa) { const m = await sl.sock.sendMessage(VG.wa + "@s.whatsapp.net", { text: "🤖 Sigo · " + texto }); try { (sl.mine = sl.mine || new Set()).add(m.key.id); } catch { } }
+  } catch { }
+}
+/* key: evita repetir el mismo aviso; cada: minutos mínimos entre avisos iguales */
+export function avisar(key, texto, cada = 60) {
+  const t = VG.ult.get(key) || 0; if (Date.now() - t < cada * 60000) return;
+  VG.ult.set(key, Date.now()); (VCTX && VCTX.log || console.log)("AVISO:", texto); enviarAviso(texto);
+}
+const vgNom = e => String(e || "").split("@")[0];
+const limaHora = () => { const d = new Date(Date.now() - 5 * 3600000); return { h: d.getUTCHours(), m: d.getUTCMinutes(), dia: d.toISOString().slice(0, 10) }; };
+export function vigiaError(e) { VG.errores.push(Date.now()); VG.ultErr = String(e && e.message || e).slice(0, 150); }
+export function vigiaCierre(sl, code) {
+  const v = vgS(sl); v.cierres.push(Date.now());
+  if (code === 403) avisar("restr:" + sl.email, "🔴 WhatsApp RESTRINGIÓ el número de " + vgNom(sl.email) + ". Se pausaron sus envíos. Revisar su teléfono.", 360);
+}
+function vgS(sl) { let v = VG.s.get(sl.email); if (!v) { v = { cierres: [], offDesde: 0, qrDesde: 0, colaAntes: 0, ini: 0, ultRes: Date.now(), ultSeq: 0, total: 0, alertado: false }; VG.s.set(sl.email, v); } return v; }
+export function vigiaRevisar() { return revisar(); }
+function revisar() {
+  const ahora = Date.now(), L = limaHora();
+  for (const sl of VCTX.sellers()) {
+    const v = vgS(sl), st = sl.st, q = sl.queue.length, n = vgNom(sl.email), R = sl.DATA.results;
+    v.cierres = v.cierres.filter(t => ahora - t < 15 * 60000);
+    /* --- conexión --- */
+    if (st.state === "open") {
+      if (v.alertado) { avisar("ok:" + sl.email, "✅ El WhatsApp de " + n + " volvió a conectarse." + (q ? " Sigue con " + q + " pendientes." : ""), 5); v.alertado = false; }
+      v.offDesde = 0; v.qrDesde = 0; v.vivo = true;
+    } else if (st.state === "qr") {
+      v.qrDesde = v.qrDesde || ahora;
+      if (q && ahora - v.qrDesde > 3 * 60000) { avisar("qr:" + sl.email, "🔴 " + n + " tiene " + q + " mensajes pendientes pero su WhatsApp está DESVINCULADO (pide QR). Debe volver a conectarlo en Sigo.", 60); v.alertado = true; }
+    } else {
+      v.offDesde = v.offDesde || ahora;
+      if (/cerró la sesión/i.test(st.err || "")) { avisar("out:" + sl.email, "🔴 Se desvinculó el WhatsApp de " + n + " (cerraron la sesión desde el teléfono)." + (q ? " Tiene " + q + " pendientes." : "") + " Debe escanear el QR otra vez.", q || v.vivo ? 180 : 1440); v.alertado = true; }
+      else if ((q || v.vivo) && ahora - v.offDesde > 4 * 60000 && !/restringió/i.test(st.err || "")) { avisar("off:" + sl.email, "🔴 El WhatsApp de " + n + " lleva " + Math.round((ahora - v.offDesde) / 60000) + " min sin conexión." + (q ? " Tiene " + q + " pendientes." : ""), 60); v.alertado = true; }
+    }
+    if (v.cierres.length >= 4) avisar("loop:" + sl.email, "🟡 PREVENTIVO: el WhatsApp de " + n + " se reconectó " + v.cierres.length + " veces en 15 min. Puede desvincularse pronto. Revisar internet de la PC y que su teléfono tenga señal.", 60);
+    /* --- avance de la cola --- */
+    const ult = R.length ? R[R.length - 1] : null;
+    if (ult && ult.seq !== v.ultSeq) { v.ultSeq = ult.seq; v.ultRes = ahora; }
+    if (q && !v.colaAntes) { v.ini = ult ? ult.seq : 0; v.total = q; v.ultRes = ahora; if (q >= 10) avisar("ini:" + sl.email + v.ini, "🟢 " + n + " empezó una difusión de " + q + " mensajes.", 1); }
+    if (q > v.colaAntes) v.total = Math.max(v.total, q + R.filter(r => r.seq > v.ini).length);
+    if (!q && v.colaAntes) {
+      const lote = R.filter(r => r.seq > v.ini), ok = lote.filter(r => r.ok).length, mal = lote.length - ok;
+      if (lote.length >= 5) { const errs = {}; lote.filter(r => !r.ok).forEach(r => { errs[r.err] = (errs[r.err] || 0) + 1; }); const top = Object.entries(errs).sort((a, b) => b[1] - a[1])[0];
+        avisar("fin:" + sl.email + v.ini, (mal ? "🟡" : "✅") + " Terminó la difusión de " + n + ": " + ok + " enviados" + (mal ? ", " + mal + " no enviados" + (top ? " (más común: " + top[0] + ")" : "") : ", sin fallos") + ".", 1); }
+    }
+    v.colaAntes = q;
+    const trabajando = q && st.state === "open" && !sl.paused && !(sl.breakUntil > ahora) && !/tope|plan/i.test(st.err || "");
+    if (trabajando && ahora - v.ultRes > 12 * 60000) avisar("trabado:" + sl.email, "🔴 La cola de " + n + " está TRABADA: " + q + " pendientes y ningún envío en " + Math.round((ahora - v.ultRes) / 60000) + " min. Reiniciar INICIAR.bat (la cola se guarda).", 45);
+    /* --- fallos que suben (preventivo) --- */
+    const rec = R.filter(r => ahora - Date.parse(r.ts) < 30 * 60000), malos = rec.filter(r => !r.ok);
+    if (rec.length >= 10 && malos.length / rec.length >= 0.3) avisar("fallos:" + sl.email, "🟡 PREVENTIVO: " + malos.length + " de " + rec.length + " envíos de " + n + " fallaron en 30 min. Último error: " + (malos[malos.length - 1].err || "?") + ". Si sigue así puede ser señal de bloqueo.", 60);
+    /* --- topes --- */
+    const cap = Math.min(VCTX.cfg.dailyCap, (sl.acc && sl.acc.tope_dia) || Infinity);
+    if (/tope diario/i.test(st.err || "") && q) avisar("tope:" + sl.email + L.dia, "🟡 " + n + " llegó al tope del día (" + cap + "). Quedan " + q + " para mañana.", 1440);
+    else if (isFinite(cap) && sl.DATA.sentToday >= cap * 0.8 && sl.DATA.day === new Date().toISOString().slice(0, 10)) avisar("tope80:" + sl.email + L.dia, "🟡 PREVENTIVO: " + n + " ya usó " + sl.DATA.sentToday + " de " + cap + " envíos de hoy.", 1440);
+    const rest = VCTX.restantes(sl.acc);
+    if (isFinite(rest) && rest <= 0 && /plan/i.test(st.err || "")) avisar("plan0:" + sl.email, "🔴 " + n + " se quedó sin envíos de su plan.", 1440);
+    else if (isFinite(rest) && rest < 50) avisar("plan:" + sl.email, "🟡 PREVENTIVO: a " + n + " le quedan " + rest + " envíos de su plan.", 1440);
+  }
+  /* --- puente en general --- */
+  if (!VCTX.publicUrl()) { VG.sinUrl = VG.sinUrl || ahora; if (ahora - VG.sinUrl > 3 * 60000) avisar("tunel", "🔴 El puente no tiene dirección pública hace " + Math.round((ahora - VG.sinUrl) / 60000) + " min: la app no puede conectarse. Revisar el internet de la PC.", 30); }
+  else VG.sinUrl = 0;
+  VG.errores = VG.errores.filter(t => ahora - t < 10 * 60000);
+  if (VG.errores.length >= 5) avisar("errores", "🟡 PREVENTIVO: el puente tuvo " + VG.errores.length + " errores en 10 min. Último: " + VG.ultErr, 60);
+  try { const libre = os.freemem() / os.totalmem(), rss = process.memoryUsage().rss / 1048576;
+    if (libre < 0.08) avisar("ram", "🟡 PREVENTIVO: la PC del puente tiene poca memoria libre (" + Math.round(libre * 100) + "%). Cerrar programas o reiniciar la PC cuando no haya envíos.", 120);
+    if (rss > 1500) avisar("rss", "🟡 PREVENTIVO: el puente usa " + Math.round(rss) + " MB de memoria. Conviene reiniciar INICIAR.bat cuando no haya envíos.", 180); } catch { }
+  /* --- resumen del día (20:05 Lima) --- */
+  if (L.h === 20 && L.m >= 5 && VG.resumen !== L.dia) { VG.resumen = L.dia;
+    const lineas = [...VCTX.sellers()].map(sl => { const hoy = sl.DATA.results.filter(r => new Date(Date.parse(r.ts) - 5 * 3600000).toISOString().slice(0, 10) === L.dia); const ok = hoy.filter(r => r.ok).length; return "• " + vgNom(sl.email) + ": " + (sl.st.state === "open" ? "conectado" : "SIN conexión") + ", " + ok + " enviados" + (hoy.length - ok ? ", " + (hoy.length - ok) + " fallidos" : "") + (sl.queue.length ? ", " + sl.queue.length + " pendientes" : ""); });
+    avisar("resumen" + L.dia, "📋 Resumen de hoy en Sigo:\n" + lineas.join("\n"), 1); }
+}
+export function vigia(ctx) {
+  VCTX = ctx; vgLeer();
+  setInterval(vgLeer, 60000);
+  setInterval(() => { vgChat(); }, 20000);
+  setTimeout(() => avisar("inicio", "🟢 El puente de Sigo se inició" + (VG.tok ? "" : " (Telegram aún sin configurar)") + ". Si no esperabas esto, la PC o el puente se reiniciaron.", 10), 90000);
+  setInterval(() => { try { revisar(); } catch (e) { ctx.log("Vigía:", e.message); } }, 60000);
 }

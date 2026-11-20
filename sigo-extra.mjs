@@ -64,7 +64,9 @@ export async function destino(sl, sock, to) {
   if (raw.includes("@")) return [{ exists: true, jid: raw }];
   const d = digits(raw);
   if (LIDS[d]) return [{ exists: true, jid: LIDS[d] }];
-  return sock.onWhatsApp(d + "@s.whatsapp.net");
+  // onWhatsApp a veces dice "no existe" para números que sí tienen WhatsApp (cambio de WhatsApp a LID). Si falla, se envía igual al número.
+  try { const r = await sock.onWhatsApp(d + "@s.whatsapp.net"); if (r && r[0] && r[0].exists) return r; } catch { }
+  return d.length >= 10 ? [{ exists: true, jid: d + "@s.whatsapp.net" }] : [];
 }
 
 /* Prioridad para lo que escribe el vendedor en la Bandeja */

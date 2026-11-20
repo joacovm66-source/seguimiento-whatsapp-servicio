@@ -106,7 +106,7 @@ async function startWA(sl) {
     const { state, saveCreds } = await B.useMultiFileAuthState(sl.auth);
     let version; try { version = (await B.fetchLatestBaileysVersion()).version; } catch { }
     sl.st.state = "connecting";
-    const sock = sl.sock = makeWASocket({ auth: state, version, logger: pino({ level: "silent" }), printQRInTerminal: false, browser: B.Browsers ? B.Browsers.ubuntu("Chrome") : ["Ubuntu", "Chrome", "22.04.4"], markOnlineOnConnect: false, syncFullHistory: false });
+    const sock = sl.sock = makeWASocket({ auth: state, version, logger: pino({ level: "silent" }), printQRInTerminal: false, browser: B.Browsers ? B.Browsers.ubuntu("Chrome") : ["Ubuntu", "Chrome", "22.04.4"], markOnlineOnConnect: false, syncFullHistory: true });
     sock.ev.on("creds.update", async () => { await saveCreds(); persist(sl); });
     sock.ev.on("connection.update", async u => {
       if (gen !== sl.gen) return;
@@ -121,6 +121,7 @@ async function startWA(sl) {
         else { sl.st.err = "Reconectando…"; setTimeout(() => startWA(sl), 3000); }
       }
     });
+    SX.bandeja(sl, sock, B);
     SX.escucharLeidos(sl, sock, (num, ts) => { sl.DATA.replies.push({ seq: ++sl.DATA.rseq, from: num, read: true, text: "", ts }); saveData(sl); });
     sock.ev.on("messages.upsert", async ({ messages, type }) => {
       if (type !== "notify") return;
@@ -231,6 +232,7 @@ const server = http.createServer(async (req, res) => {
   if (!acc.permitido) return send(res, 403, { error: "pausado", motivo: acc.motivo || "Cuenta pausada" });
   const sl = seller(email); sl.acc = acc; const { st, DATA, queue } = sl;
   try {
+    if (u.pathname.startsWith("/bx/")) { startWA(sl); if (await SX.rutasBandeja(u, req, res, sl, send, body)) return; }
     if (u.pathname === "/archivo" && req.method === "POST") return SX.enviarArchivo(req, res, sl, send);
     if (u.pathname === "/sync") {
       startWA(sl);

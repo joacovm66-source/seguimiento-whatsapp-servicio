@@ -127,6 +127,7 @@ export async function enviarArchivo(req, res, sl, send) {
       : { document: buf, mimetype: mime, fileName: String(b.nombre || "archivo").slice(0, 100), caption: cap };
     const sent = await sl.sock.sendMessage(r[0].jid, content);
     try { (sl.mine = sl.mine || new Set()).add(sent.key.id); } catch { }
+    try { const st = bxStore(sl), r2 = agregar(st, sent, false); if (r2) { const name0 = crypto.randomBytes(12).toString("hex") + "." + (EXT[mime] || "bin"); fs.writeFileSync(path.join(MDIR, name0), buf); r2.o.f = name0; bxSave(st); } } catch { }
     const name = crypto.randomBytes(12).toString("hex") + "." + (EXT[mime] || "bin");
     try { fs.writeFileSync(path.join(MDIR, name), buf); } catch { }
     return send(res, 200, { ok: true, archivo: name, ts: new Date().toISOString() });
@@ -149,4 +150,157 @@ export function autoActualizar(ocupado, log) {
       }
     } catch { }
   }, 10 * 60 * 1000);
+}
+
+/* ======================= Bandeja tipo WhatsApp =======================
+   El puente guarda los chats y mensajes de cada vendedor (historial, contactos, archivos)
+   y la app los muestra como WhatsApp Web. Rutas /bx/* (requieren sesión de la app). */
+let BJ = null; // BufferJSON de Baileys (para guardar los datos de los archivos)
+const BX = new Map();
+const nOf = x => { if (x == null) return 0; if (typeof x === "object") return Number(x.toNumber ? x.toNumber() : x.low) || 0; return Number(x) || 0; };
+function bxStore(sl) {
+  let s = BX.get(sl.email); if (s) return s;
+  s = { f: path.join(sl.dir, "bandeja.json"), fr: path.join(sl.dir, "bandeja-archivos.json"), chats: {}, msgs: {}, names: {}, raws: null, v: 1, t: null };
+  try { Object.assign(s, JSON.parse(fs.readFileSync(s.f, "utf8"))); } catch { }
+  BX.set(sl.email, s); return s;
+}
+function bxRaws(s) {
+  if (s.raws) return s.raws;
+  try { s.raws = JSON.parse(fs.readFileSync(s.fr, "utf8"), BJ ? BJ.reviver : undefined) || {}; } catch { s.raws = {}; }
+  return s.raws;
+}
+function bxSave(s) {
+  s.v++; clearTimeout(s.t);
+  s.t = setTimeout(() => {
+    try { fs.writeFileSync(s.f, JSON.stringify({ chats: s.chats, msgs: s.msgs, names: s.names, v: s.v })); } catch { }
+    if (s.raws) try { fs.writeFileSync(s.fr, JSON.stringify(s.raws, BJ ? BJ.replacer : undefined)); } catch { }
+  }, 3000);
+}
+const ignorar = j => !j || /@g\.us$|^status@|@newsletter$|@broadcast$/.test(j);
+function canon(s, jid, k = {}) {
+  jid = String(jid || "").replace(/:\d+@/, "@");
+  if (!jid.endsWith("@lid")) return jid;
+  const d = digits(jid.split("@")[0]);
+  const alt = [k.remoteJidAlt, k.senderPn, k.participantAlt].find(x => x && !String(x).includes("@lid"));
+  if (alt) { const r = digits(String(alt).split("@")[0].split(":")[0]); if (r) { LIDS[d] = jid; LIDS["r" + d] = r; guardarLids(); fusionar(s, jid, r + "@s.whatsapp.net"); return r + "@s.whatsapp.net"; } }
+  return LIDS["r" + d] ? LIDS["r" + d] + "@s.whatsapp.net" : jid;
+}
+function fusionar(s, de, a) {
+  if (!s.chats[de] || de === a) return;
+  const m = (s.msgs[a] || []).concat(s.msgs[de] || []), vistos = new Set();
+  s.msgs[a] = m.filter(x => !vistos.has(x.id) && vistos.add(x.id)).sort((x, y) => x.ts - y.ts).slice(-400);
+  const c = s.chats[a] || { id: a, unread: 0, ts: 0 }, o = s.chats[de];
+  s.chats[a] = Object.assign(c, { unread: (c.unread || 0) + (o.unread || 0) }, o.ts > (c.ts || 0) ? { ts: o.ts, last: o.last, lastMe: o.lastMe } : {});
+  if (!s.names[a] && s.names[de]) s.names[a] = s.names[de];
+  delete s.chats[de]; delete s.msgs[de];
+}
+function parse(m) {
+  const msg = desenvolver(m.message); if (!msg || !Object.keys(msg).length) return null;
+  if (msg.protocolMessage || msg.reactionMessage || msg.pollUpdateMessage) return null;
+  const k = Object.keys(TIPOS).find(x => msg[x]);
+  let tipo = "texto", t = msg.conversation || (msg.extendedTextMessage && msg.extendedTextMessage.text) || "";
+  if (k) { tipo = TIPOS[k]; t = msg[k].caption || ""; }
+  else if (msg.locationMessage || msg.liveLocationMessage) t = "📍 Ubicación";
+  else if (msg.contactMessage) t = "👤 " + (msg.contactMessage.displayName || "Contacto");
+  else if (msg.contactsArrayMessage) t = "👥 Contactos";
+  else if (msg.buttonsResponseMessage) t = msg.buttonsResponseMessage.selectedDisplayText || "";
+  else if (msg.listResponseMessage) t = msg.listResponseMessage.title || "";
+  else if (msg.templateButtonReplyMessage) t = msg.templateButtonReplyMessage.selectedDisplayText || "";
+  else if (msg.pollCreationMessage || msg.pollCreationMessageV3) t = "📊 Encuesta";
+  if (!t && tipo === "texto") return null;
+  const o = { id: m.key.id, me: !!m.key.fromMe, ts: nOf(m.messageTimestamp) || Math.floor(Date.now() / 1000), t: String(t).slice(0, 4000), tipo, j: m.key.remoteJid };
+  if (k) { const i = msg[k]; o.mime = String(i.mimetype || "").split(";")[0]; if (k === "documentMessage") o.n = i.fileName || "Documento"; if (i.seconds) o.dur = i.seconds; if (k === "audioMessage" && i.ptt) o.ptt = 1; }
+  if (m.status != null && o.me) o.st = m.status;
+  return o;
+}
+const PREV = { imagen: "📷 Foto", audio: "🎤 Audio", video: "🎬 Video", documento: "📄 Documento", sticker: "Sticker" };
+const quitarMiniaturas = obj => JSON.parse(JSON.stringify(obj, (k, v) => (k === "jpegThumbnail" ? undefined : BJ ? BJ.replacer(k, v) : v)), BJ ? BJ.reviver : undefined);
+function agregar(s, m, nuevo) {
+  const j0 = m.key && m.key.remoteJid; if (ignorar(j0)) return null;
+  const c = canon(s, j0, m.key), o = parse(m); if (!o) return null;
+  const arr = s.msgs[c] || (s.msgs[c] = []);
+  const ya = arr.find(x => x.id === o.id); if (ya) { if (o.st != null) ya.st = o.st; return null; }
+  arr.push(o); if (arr.length > 1 && arr[arr.length - 2].ts > o.ts) arr.sort((a, b) => a.ts - b.ts); if (arr.length > 400) arr.splice(0, arr.length - 400);
+  const ch = s.chats[c] || (s.chats[c] = { id: c, unread: 0, ts: 0 });
+  if (o.ts >= (ch.ts || 0)) { ch.ts = o.ts; ch.last = o.t || PREV[o.tipo] || ""; ch.lastTipo = o.tipo; ch.lastMe = o.me; }
+  if (nuevo && !o.me) ch.unread = (ch.unread || 0) + 1;
+  if (!o.me && m.pushName && !(s.names[c] && s.names[c].g)) s.names[c] = { n: m.pushName };
+  if (o.tipo !== "texto") { try { bxRaws(s)[c + "|" + o.id] = { key: m.key, message: quitarMiniaturas(m.message) }; } catch { } }
+  bxSave(s); return { c, o };
+}
+function nombre(s, c) {
+  const x = s.names[c]; if (x && x.n) return { n: x.n, g: !!x.g };
+  if (c.endsWith("@s.whatsapp.net")) { const d = digits(c.split("@")[0]); return { n: d.startsWith("51") && d.length === 11 ? `+51 ${d.slice(2, 5)} ${d.slice(5, 8)} ${d.slice(8)}` : "+" + d, g: false }; }
+  return { n: "Contacto de WhatsApp", g: false };
+}
+async function bajar(sl, s, c, id) {
+  const o = (s.msgs[c] || []).find(x => x.id === id); if (!o) throw new Error("no existe");
+  if (o.f && fs.existsSync(path.join(MDIR, o.f))) return o.f;
+  const raw = bxRaws(s)[c + "|" + id]; if (!raw || !BX_B) throw new Error("sin datos del archivo");
+  const buf = await BX_B.downloadMediaMessage(raw, "buffer", {}, { reuploadRequest: sl.sock && sl.sock.updateMediaMessage, logger: undefined });
+  const name = crypto.randomBytes(12).toString("hex") + "." + (EXT[o.mime] || (o.tipo === "audio" ? "ogg" : "bin"));
+  fs.writeFileSync(path.join(MDIR, name), buf); o.f = name; bxSave(s); return name;
+}
+let BX_B = null;
+/* Se llama al crear el WhatsApp de un vendedor */
+export function bandeja(sl, sock, B) {
+  BX_B = B; BJ = B.BufferJSON || BJ;
+  const s = bxStore(sl);
+  const contactos = (lista) => { for (const k of lista || []) { if (!k || ignorar(k.id)) continue; const c = canon(s, k.id, { remoteJidAlt: k.phoneNumber || k.jid }); if (k.name) s.names[c] = { n: k.name, g: 1 }; else if ((k.notify || k.verifiedName) && !(s.names[c] && s.names[c].g)) s.names[c] = { n: k.notify || k.verifiedName }; } bxSave(s); };
+  sock.ev.on("contacts.upsert", contactos);
+  sock.ev.on("contacts.update", contactos);
+  sock.ev.on("messaging-history.set", ({ chats, contacts, messages }) => {
+    contactos(contacts);
+    for (const ch of chats || []) { if (!ch || ignorar(ch.id)) continue; const c = canon(s, ch.id, { remoteJidAlt: ch.pnJid }); const x = s.chats[c] || (s.chats[c] = { id: c, unread: 0, ts: 0 }); if (ch.unreadCount != null) x.unread = ch.unreadCount; const t = nOf(ch.conversationTimestamp); if (t > (x.ts || 0)) x.ts = t; if (ch.name && !(s.names[c] && s.names[c].g)) s.names[c] = { n: ch.name, g: 1 }; }
+    for (const m of messages || []) { try { agregar(s, m, false); } catch { } }
+    bxSave(s);
+  });
+  sock.ev.on("messages.upsert", ({ messages, type }) => {
+    for (const m of messages || []) {
+      try {
+        const r = agregar(s, m, type === "notify");
+        if (r && type === "notify" && !r.o.me && /^(audio|imagen)$/.test(r.o.tipo)) bajar(sl, s, r.c, r.o.id).catch(() => { });
+      } catch { }
+    }
+  });
+  sock.ev.on("messages.update", (lista) => { for (const u of lista || []) { const k = u.key || {}; if (ignorar(k.remoteJid) || !u.update || u.update.status == null) continue; const c = canon(s, k.remoteJid, k), o = (s.msgs[c] || []).find(x => x.id === k.id); if (o && o.me) { o.st = u.update.status; bxSave(s); } } });
+  sock.ev.on("chats.update", (lista) => { for (const ch of lista || []) { if (!ch || ignorar(ch.id) || ch.unreadCount == null) continue; const c = canon(s, ch.id), x = s.chats[c]; if (x) { x.unread = ch.unreadCount; bxSave(s); } } });
+}
+
+/* Rutas /bx/* — devuelve true si atendió la petición */
+export async function rutasBandeja(u, req, res, sl, send, leerBody) {
+  if (!u.pathname.startsWith("/bx/")) return false;
+  const s = bxStore(sl), sock = sl.sock, conectado = sl.st && sl.st.state === "open";
+  try {
+    if (u.pathname === "/bx/chats") {
+      const lista = Object.values(s.chats).filter(c => c.ts).sort((a, b) => b.ts - a.ts).slice(0, 500)
+        .map(c => { const nm = nombre(s, c.id); return { id: c.id, nombre: nm.n, guardado: nm.g, num: c.id.endsWith("@s.whatsapp.net") ? digits(c.id.split("@")[0]) : "", last: c.last || "", lastTipo: c.lastTipo || "texto", lastMe: !!c.lastMe, ts: c.ts, unread: c.unread || 0 }; });
+      send(res, 200, { conectado, v: s.v, me: sl.st && sl.st.me, chats: lista }); return true;
+    }
+    if (u.pathname === "/bx/mensajes") {
+      const c = u.searchParams.get("c") || "", antes = +u.searchParams.get("antes") || Infinity;
+      const arr = (s.msgs[c] || []).filter(x => x.ts < antes || antes === Infinity);
+      send(res, 200, { v: s.v, nombre: nombre(s, c), mensajes: arr.slice(-80).map(({ j, ...x }) => x), mas: arr.length > 80 }); return true;
+    }
+    if (u.pathname === "/bx/media") {
+      const f = await bajar(sl, s, u.searchParams.get("c") || "", u.searchParams.get("id") || "");
+      send(res, 200, { f }); return true;
+    }
+    if (u.pathname === "/bx/leer" && req.method === "POST") {
+      const b = await leerBody(req), c = String(b.c || ""), ch = s.chats[c];
+      if (ch) { ch.unread = 0; bxSave(s); }
+      if (conectado) { const keys = (s.msgs[c] || []).filter(x => !x.me).slice(-15).map(x => ({ remoteJid: x.j || c, id: x.id, fromMe: false })); if (keys.length) sock.readMessages(keys).catch(() => { }); }
+      send(res, 200, { ok: true }); return true;
+    }
+    if (u.pathname === "/bx/enviar" && req.method === "POST") {
+      const b = await leerBody(req), c = String(b.c || ""), t = String(b.t || "").trim().slice(0, 4000);
+      if (!conectado) { send(res, 200, { ok: false, error: "Tu WhatsApp no está conectado" }); return true; }
+      if (!c || !t) { send(res, 200, { ok: false, error: "Mensaje vacío" }); return true; }
+      const sent = await sock.sendMessage(c, { text: t });
+      try { (sl.mine = sl.mine || new Set()).add(sent.key.id); } catch { }
+      agregar(s, sent, false);
+      send(res, 200, { ok: true, id: sent.key.id }); return true;
+    }
+  } catch (e) { send(res, 200, { ok: false, error: String(e.message || e).slice(0, 120) }); return true; }
+  return false;
 }

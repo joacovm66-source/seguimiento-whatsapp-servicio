@@ -4,6 +4,7 @@
    3. Respuestas desde la Bandeja (id "m:..."): pasan primero en la cola y sin la espera larga de campañas.
    4. /archivo: el vendedor envía fotos, PDF, audios o videos desde la Bandeja. */
 import fs from "node:fs";
+import { Buffer } from "node:buffer";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -126,7 +127,7 @@ export async function enviarArchivo(req, res, sl, send) {
       : /^audio\//.test(mime) ? { audio: buf, mimetype: mime, ptt: /ogg|opus|webm/.test(mime) }
       : { document: buf, mimetype: mime, fileName: String(b.nombre || "archivo").slice(0, 100), caption: cap };
     const sent = await sl.sock.sendMessage(r[0].jid, content);
-    try { (sl.mine = sl.mine || new Set()).add(sent.key.id); } catch { }
+    try { (sl.mine = sl.mine || new Set()).add(sent.key.id); (sl.manualIds = sl.manualIds || new Set()).add(sent.key.id); } catch { }
     try { const st = bxStore(sl), r2 = agregar(st, sent, false); if (r2) { const name0 = crypto.randomBytes(12).toString("hex") + "." + (EXT[mime] || "bin"); fs.writeFileSync(path.join(MDIR, name0), buf); r2.o.f = name0; bxSave(st); } } catch { }
     const name = crypto.randomBytes(12).toString("hex") + "." + (EXT[mime] || "bin");
     try { fs.writeFileSync(path.join(MDIR, name), buf); } catch { }
@@ -297,10 +298,70 @@ export async function rutasBandeja(u, req, res, sl, send, leerBody) {
       if (!conectado) { send(res, 200, { ok: false, error: "Tu WhatsApp no está conectado" }); return true; }
       if (!c || !t) { send(res, 200, { ok: false, error: "Mensaje vacío" }); return true; }
       const sent = await sock.sendMessage(c, { text: t });
-      try { (sl.mine = sl.mine || new Set()).add(sent.key.id); } catch { }
+      try { (sl.mine = sl.mine || new Set()).add(sent.key.id); (sl.manualIds = sl.manualIds || new Set()).add(sent.key.id); } catch { }
       agregar(s, sent, false);
       send(res, 200, { ok: true, id: sent.key.id }); return true;
     }
   } catch (e) { send(res, 200, { ok: false, error: String(e.message || e).slice(0, 120) }); return true; }
   return false;
+}
+
+/* ======================= IA por WhatsApp y avisos a asesores ======================= */
+let CONF = { url: "", secret: "" };
+export function config(c) { CONF = Object.assign(CONF, c); }
+const noEsLinea = new Map(); // email -> hasta cuándo sabemos que no es la línea de la IA
+async function llamarBot(cuerpo) {
+  const r = await fetch(CONF.url + "/functions/v1/bot", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(Object.assign({ secret: CONF.secret }, cuerpo)) });
+  return r.json();
+}
+async function botWA(sl, sock, c, o) {
+  if (!CONF.url || !CONF.secret || (noEsLinea.get(sl.email) || 0) > Date.now()) return;
+  try {
+    try { await sock.sendPresenceUpdate("composing", c); } catch { }
+    const j = await llamarBot({ accion: "wa", email: sl.email, jid: c, texto: o.t || `[El cliente envió ${o.tipo === "audio" ? "un audio" : o.tipo === "imagen" ? "una foto" : "un archivo"}]` });
+    if (j.ignorar) { noEsLinea.set(sl.email, Date.now() + 10 * 60 * 1000); return; }
+    sl.botIds = sl.botIds || new Set();
+    for (const m of j.mensajes || []) {
+      if (m.texto) { const s1 = await sock.sendMessage(c, { text: m.texto }); sl.botIds.add(s1.key.id); }
+      for (const f of m.media || []) {
+        try { const r = await fetch(f.url); const buf = Buffer.from(await r.arrayBuffer()); const mime = f.mime || r.headers.get("content-type") || "";
+          const s2 = await sock.sendMessage(c, /^image\//.test(mime) ? { image: buf, mimetype: mime } : /^video\//.test(mime) ? { video: buf, mimetype: mime } : { document: buf, mimetype: mime, fileName: f.titulo || "archivo" });
+          sl.botIds.add(s2.key.id); } catch { }
+      }
+    }
+    try { await sock.sendPresenceUpdate("paused", c); } catch { }
+  } catch (e) { }
+}
+function humano(sl, c, id) {
+  if (!CONF.url || (noEsLinea.get(sl.email) || 0) > Date.now()) return;
+  if (sl.botIds && sl.botIds.has(id)) return;
+  if (sl.mine && sl.mine.has(id) && !(sl.manualIds && sl.manualIds.has(id))) return; // campañas automáticas no pausan la IA
+  llamarBot({ accion: "wa_humano", email: sl.email, jid: c }).catch(() => { });
+}
+async function enviarAvisos(sl) {
+  if (!CONF.url || !sl.sock || !sl.st || sl.st.state !== "open") return;
+  try {
+    const r = await fetch(CONF.url + "/functions/v1/puente", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fn: "puente_avisos", args: { secret: CONF.secret, p_email: sl.email } }) });
+    const lista = await r.json(); if (!Array.isArray(lista)) return;
+    for (const a of lista) {
+      let ok = false; try { await sl.sock.sendMessage(String(a.para).replace(/\D/g, "") + "@s.whatsapp.net", { text: a.texto }); ok = true; } catch { }
+      fetch(CONF.url + "/functions/v1/puente", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fn: "puente_aviso_hecho", args: { secret: CONF.secret, p_id: a.id, p_ok: ok } }) }).catch(() => { });
+    }
+  } catch { }
+}
+export function atencion(sl, sock) {
+  sock.ev.on("messages.upsert", ({ messages, type }) => {
+    for (const m of messages || []) {
+      try {
+        const k = m.key || {}; if (ignorar(k.remoteJid)) continue;
+        const s = bxStore(sl), c = canon(s, k.remoteJid, k);
+        if (k.fromMe) { if (type === "notify" || type === "append") humano(sl, c, k.id); continue; }
+        if (type !== "notify") continue;
+        const o = parse(m); if (!o) continue;
+        if (Date.now() / 1000 - o.ts > 120) continue; // no responder mensajes viejos al reconectar
+        botWA(sl, sock, c, o);
+      } catch { }
+    }
+  });
+  if (!sl.avisosT) sl.avisosT = setInterval(() => enviarAvisos(sl), 60000);
 }

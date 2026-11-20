@@ -122,6 +122,7 @@ async function startWA(sl) {
       }
     });
     SX.bandeja(sl, sock, B);
+    SX.atencion(sl, sock);
     SX.escucharLeidos(sl, sock, (num, ts) => { sl.DATA.replies.push({ seq: ++sl.DATA.rseq, from: num, read: true, text: "", ts }); saveData(sl); });
     sock.ev.on("messages.upsert", async ({ messages, type }) => {
       if (type !== "notify") return;
@@ -295,6 +296,7 @@ server.listen(PORT, HOST, () => {
   console.log(" Deje esta ventana abierta durante el horario de trabajo.");
   console.log(" Los vendedores solo abren la app y pulsan «Conectar WhatsApp».");
   console.log("==============================================\n");
+  SX.config({ url: CFG.supabaseUrl, secret: CFG.secret });
   openTunnel(); publish();
   if (!MOCK) SX.autoActualizar(() => [...sellers.values()].some(x => x.running && x.queue.length), (...a) => log(...a));
   (async () => { await restoreAll(); if (!MOCK) for (const d of fs.readdirSync(VEND)) { try { if (fs.existsSync(path.join(VEND, d, "sesion", "creds.json"))) { const m = readJson(path.join(VEND, d, "email.json"), null); if (m && m.email) startWA(seller(m.email)); } } catch { } } })();

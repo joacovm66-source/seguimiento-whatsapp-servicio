@@ -420,7 +420,7 @@ export function vgFoto() {
       descanso_hasta: sl.breakUntil > ahora ? hLima(sl.breakUntil) : "", en_cola: sl.queue.length, enviando_ahora: !!sl.running && sl.queue.length > 0,
       enviados_hoy_ok: R.length - malos.length, fallidos_hoy: malos.length, ultimo_envio: ult ? hLima(ult.ts) + (ult.ok ? " ok" : " falló") : "",
       ultimos_fallos: malos.slice(-5).map(r => hLima(r.ts) + " " + String(r.to || "").slice(-9) + ": " + (r.err || "?")),
-      contador_tope_hoy: sl.DATA.sentToday || 0, tope_dia: Math.min(VCTX.cfg.dailyCap, (sl.acc && sl.acc.tope_dia) || Infinity) };
+      contador_tope_hoy: sl.DATA.sentToday || 0, ultimos_cortes: sl.motivosCierre || [], tope_dia: Math.min(VCTX.cfg.dailyCap, (sl.acc && sl.acc.tope_dia) || Infinity) };
   });
   let memoria = ""; try { memoria = Math.round(os.freemem() / os.totalmem() * 100) + "% libre"; } catch { }
   return { hora_lima: String(L.h).padStart(2, "0") + ":" + String(L.m).padStart(2, "0"), fecha: L.dia, tunel: VCTX.publicUrl() ? "ok" : "caído", memoria_pc: memoria,
@@ -467,8 +467,10 @@ export function avisar(key, texto, cada = 60) {
 const vgNom = e => String(e || "").split("@")[0];
 const limaHora = () => { const d = new Date(Date.now() - 5 * 3600000); return { h: d.getUTCHours(), m: d.getUTCMinutes(), dia: d.toISOString().slice(0, 10) }; };
 export function vigiaError(e) { VG.errores.push(Date.now()); VG.ultErr = String(e && e.message || e).slice(0, 150); }
+const MOTIVO = { 401: "cerraron la sesión desde el teléfono o WhatsApp la expulsó", 403: "WhatsApp restringió el número", 408: "se cortó la conexión (internet)", 428: "WhatsApp cerró la conexión", 440: "la misma cuenta se abrió en otro lugar (otro puente o otro QR)", 500: "sesión dañada", 515: "reinicio normal tras vincular" };
+export const vgMotivo = c => c ? (MOTIVO[c] || "código " + c) + " [" + c + "]" : "";
 export function vigiaCierre(sl, code) {
-  const v = vgS(sl); v.cierres.push(Date.now());
+  const v = vgS(sl); v.cierres.push(Date.now()); v.ultCod = code; v.motivos = (v.motivos || []).concat(vgMotivo(code) + " " + hLima(Date.now())).slice(-5); sl.motivosCierre = v.motivos;
   if (code === 403) avisar("restr:" + sl.email, "🔴 WhatsApp RESTRINGIÓ el número de " + vgNom(sl.email) + ". Se pausaron sus envíos. Revisar su teléfono.", 360);
 }
 function vgS(sl) { let v = VG.s.get(sl.email); if (!v) { v = { cierres: [], offDesde: 0, qrDesde: 0, colaAntes: 0, ini: 0, ultRes: Date.now(), ultSeq: 0, total: 0, alertado: false }; VG.s.set(sl.email, v); } return v; }
@@ -487,7 +489,7 @@ function revisar() {
       if (q && ahora - v.qrDesde > 3 * 60000) { avisar("qr:" + sl.email, "🔴 " + n + " tiene " + q + " mensajes pendientes pero su WhatsApp está DESVINCULADO (pide QR). Debe volver a conectarlo en Sigo.", 60); v.alertado = true; }
     } else {
       v.offDesde = v.offDesde || ahora;
-      if (/cerró la sesión/i.test(st.err || "")) { avisar("out:" + sl.email, "🔴 Se desvinculó el WhatsApp de " + n + " (cerraron la sesión desde el teléfono)." + (q ? " Tiene " + q + " pendientes." : "") + " Debe escanear el QR otra vez.", q || v.vivo ? 180 : 1440); v.alertado = true; }
+      if (/cerró la sesión/i.test(st.err || "")) { avisar("out:" + sl.email, "🔴 Se desvinculó el WhatsApp de " + n + " (" + (vgMotivo(v.ultCod) || "cerraron la sesión desde el teléfono") + ")." + (q ? " Tiene " + q + " pendientes." : "") + " Debe escanear el QR otra vez.", q || v.vivo ? 180 : 1440); v.alertado = true; }
       else if ((q || v.vivo) && ahora - v.offDesde > 4 * 60000 && !/restringió/i.test(st.err || "")) { avisar("off:" + sl.email, "🔴 El WhatsApp de " + n + " lleva " + Math.round((ahora - v.offDesde) / 60000) + " min sin conexión." + (q ? " Tiene " + q + " pendientes." : ""), 60); v.alertado = true; }
     }
     if (v.cierres.length >= 4) avisar("loop:" + sl.email, "🟡 PREVENTIVO: el WhatsApp de " + n + " se reconectó " + v.cierres.length + " veces en 15 min. Puede desvincularse pronto. Revisar internet de la PC y que su teléfono tenga señal.", 60);

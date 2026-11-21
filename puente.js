@@ -307,7 +307,7 @@ server.listen(PORT, HOST, () => {
   console.log("==============================================\n");
   SX.config({ url: CFG.supabaseUrl, secret: CFG.secret });
   openTunnel(); publish();
-  if (!MOCK) SX.vigia({ supa: { url: CFG.supabaseUrl, key: CFG.supabaseKey, secret: CFG.secret }, sellers: () => sellers.values(), cfg: CFG, publicUrl: () => publicUrl, restantes, log });
+  if (!MOCK) SX.vigia({ supa: { url: CFG.supabaseUrl, key: CFG.supabaseKey, secret: CFG.secret }, sellers: () => sellers.values(), cfg: CFG, publicUrl: () => publicUrl, restantes, log, worker: sl => worker(sl) });
   if (!MOCK) SX.autoActualizar(() => [...sellers.values()].some(x => x.running && x.queue.length), (...a) => log(...a));
   (async () => { await restoreAll(); if (!MOCK) for (const d of fs.readdirSync(VEND)) { try { if (fs.existsSync(path.join(VEND, d, "sesion", "creds.json"))) { const m = readJson(path.join(VEND, d, "email.json"), null); if (m && m.email) startWA(seller(m.email)); } } catch { } } })();
 });

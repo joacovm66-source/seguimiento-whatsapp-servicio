@@ -405,8 +405,43 @@ async function vgChat() { /* lee lo que el dueño le escribe al bot: /start cone
     VG.offset = u.update_id + 1; const c = u.message && u.message.chat; if (!c || !c.id) continue;
     if (!VG.chat) { VG.chat = String(c.id); try { fs.writeFileSync(F_CHAT, VG.chat); } catch { } vgNube(VG.chat); await tg("sendMessage", { chat_id: VG.chat, text: "✅ Listo. Desde ahora el puente de Sigo te avisa aquí si algo falla o está por fallar.\nEscribe estado cuando quieras ver cómo va." }); continue; }
     if (String(c.id) !== VG.chat) continue;
-    await tg("sendMessage", { chat_id: VG.chat, text: vgEstado() });
+    const txt = String(u.message.text || "").trim(); if (!txt) continue;
+    if (/^\/?(estado|status)$/i.test(txt)) { await tg("sendMessage", { chat_id: VG.chat, text: vgEstado() }); continue; }
+    vgPreguntar(txt);
   }
+}
+/* Preguntas en lenguaje natural: el puente manda la foto del estado a la función "vigia-ia" (Gemini) y ejecuta las acciones permitidas */
+const VHIST = [];
+const hLima = t => { if (!t) return ""; const d = new Date((typeof t === "number" ? t : Date.parse(t)) - 5 * 3600000); return d.toISOString().slice(11, 16); };
+export function vgFoto() {
+  const L = limaHora(), hoy = r => new Date(Date.parse(r.ts) - 5 * 3600000).toISOString().slice(0, 10) === L.dia, ahora = Date.now();
+  const vendedores = [...VCTX.sellers()].map(sl => { const R = sl.DATA.results.filter(hoy), malos = R.filter(r => !r.ok), ult = sl.DATA.results[sl.DATA.results.length - 1];
+    return { vendedor: vgNom(sl.email), email: sl.email, whatsapp: sl.st.me || "", estado: sl.st.state, aviso: sl.st.err || "", pausado: !!sl.paused,
+      descanso_hasta: sl.breakUntil > ahora ? hLima(sl.breakUntil) : "", en_cola: sl.queue.length, enviando_ahora: !!sl.running && sl.queue.length > 0,
+      enviados_hoy_ok: R.length - malos.length, fallidos_hoy: malos.length, ultimo_envio: ult ? hLima(ult.ts) + (ult.ok ? " ok" : " falló") : "",
+      ultimos_fallos: malos.slice(-5).map(r => hLima(r.ts) + " " + String(r.to || "").slice(-9) + ": " + (r.err || "?")),
+      contador_tope_hoy: sl.DATA.sentToday || 0, tope_dia: Math.min(VCTX.cfg.dailyCap, (sl.acc && sl.acc.tope_dia) || Infinity) };
+  });
+  let memoria = ""; try { memoria = Math.round(os.freemem() / os.totalmem() * 100) + "% libre"; } catch { }
+  return { hora_lima: String(L.h).padStart(2, "0") + ":" + String(L.m).padStart(2, "0"), fecha: L.dia, tunel: VCTX.publicUrl() ? "ok" : "caído", memoria_pc: memoria,
+    puente_encendido_hace_min: Math.round(process.uptime() / 60), ritmo: { seg_min: VCTX.cfg.minDelay, seg_max: VCTX.cfg.maxDelay, descanso_cada: VCTX.cfg.batch, descanso_min: VCTX.cfg.pauseMin }, vendedores };
+}
+function vgBuscar(email) { email = String(email || "").toLowerCase(); const l = [...VCTX.sellers()]; return l.find(x => x.email === email) || l.find(x => email && (x.email.startsWith(email.split("@")[0]) || email.startsWith(vgNom(x.email)))); }
+async function vgPreguntar(txt) {
+  const S = VCTX.supa; try { await tg("sendChatAction", { chat_id: VG.chat, action: "typing" }); } catch { }
+  let j = null;
+  try { const r = await fetch(S.url + "/functions/v1/vigia-ia", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ secret: S.secret, pregunta: txt, estado: vgFoto(), historial: VHIST }) }); j = await r.json(); } catch { }
+  if (!j || !j.ok) { await tg("sendMessage", { chat_id: VG.chat, text: "No pude pensar la respuesta ahora (" + ((j && j.error) || "sin conexión") + "). Te paso el estado:\n\n" + vgEstado() }); return; }
+  const hechos = [];
+  for (const a of j.acciones || []) {
+    if (a.tipo === "reiniciar") { hechos.push("🔄 Reiniciando el puente (vuelve en ~1 min, la cola se guarda)."); setTimeout(() => process.exit(0), 3000); continue; }
+    const sl = vgBuscar(a.email); if (!sl) { hechos.push("⚠️ No encontré al vendedor " + (a.email || "?") + "."); continue; }
+    if (a.tipo === "pausar") { sl.paused = true; hechos.push("⏸️ Pausé los envíos de " + vgNom(sl.email) + "."); VCTX.log("Telegram: pausado", sl.email); }
+    if (a.tipo === "reanudar") { sl.paused = false; if (/restringió/i.test(sl.st.err || "")) sl.st.err = ""; if (VCTX.worker) VCTX.worker(sl); hechos.push("▶️ Reanudé los envíos de " + vgNom(sl.email) + "."); VCTX.log("Telegram: reanudado", sl.email); }
+  }
+  const resp = j.respuesta + (hechos.length ? "\n\n" + hechos.join("\n") : "");
+  VHIST.push({ quien: "yo", t: txt }, { quien: "bot", t: resp }); while (VHIST.length > 8) VHIST.shift();
+  await tg("sendMessage", { chat_id: VG.chat, text: resp });
 }
 export function vgEstado() {
   const L = limaHora(), hoy = r => new Date(Date.parse(r.ts) - 5 * 3600000).toISOString().slice(0, 10) === L.dia;

@@ -379,8 +379,20 @@ export function atencion(sl, sock) {
 const VG = { tok: "", chat: "", wa: "51967664627", from: "ajvillal@trener.edu.pe", ult: new Map(), errores: [], s: new Map(), offset: 0, sinUrl: 0, resumen: "" };
 const F_ALE = path.join(DIR, "alertas.txt"), F_CHAT = path.join(STORE, "datos-alertas-chat.txt");
 function vgLeer() {
-  try { const l = fs.readFileSync(F_ALE, "utf8").split(/\r?\n/).map(x => x.trim()); VG.tok = l[0] || ""; if (/^\+?\d{9,15}$/.test((l[1] || "").replace(/\s/g, ""))) VG.wa = l[1].replace(/\D/g, ""); } catch { VG.tok = ""; }
-  try { VG.chat = fs.readFileSync(F_CHAT, "utf8").trim(); } catch { }
+  let local = false;
+  try { const l = fs.readFileSync(F_ALE, "utf8").split(/\r?\n/).map(x => x.trim()); if (l[0]) { VG.tok = l[0]; local = true; } if (/^\+?\d{9,15}$/.test((l[1] || "").replace(/\s/g, ""))) VG.wa = l[1].replace(/\D/g, ""); } catch { }
+  try { const c = fs.readFileSync(F_CHAT, "utf8").trim(); if (c) VG.chat = c; } catch { }
+  if (!local) vgNube(); /* sin alertas.txt: la configuración se lee de Supabase (la pone Claude) */
+}
+async function vgNube(chat) {
+  const S = VCTX && VCTX.supa; if (!S || !S.url || !S.key) return;
+  try {
+    const r = await fetch(S.url + "/rest/v1/rpc/puente_alertas", { method: "POST", headers: { apikey: S.key, Authorization: "Bearer " + S.key, "Content-Type": "application/json" }, body: JSON.stringify({ secret: S.secret, p_chat: chat || null }) });
+    if (!r.ok) return; const j = await r.json(); if (!j) return;
+    if (j.tok && j.tok !== VG.tok) { VG.tok = j.tok; VG.offset = 0; }
+    if (j.chat && !VG.chat) VG.chat = String(j.chat);
+    if (/^\d{9,15}$/.test(j.wa || "")) VG.wa = j.wa;
+  } catch { }
 }
 async function tg(metodo, datos) {
   if (!VG.tok) return null;
@@ -389,7 +401,7 @@ async function tg(metodo, datos) {
 async function vgChat() { /* detecta el chat del dueño cuando le escribe al bot */
   if (!VG.tok || VG.chat) return;
   const r = await tg("getUpdates", { offset: VG.offset, timeout: 0 });
-  for (const u of (r && r.result) || []) { VG.offset = u.update_id + 1; const c = u.message && u.message.chat; if (c && c.id) { VG.chat = String(c.id); try { fs.writeFileSync(F_CHAT, VG.chat); } catch { } await tg("sendMessage", { chat_id: VG.chat, text: "✅ Listo. Desde ahora el puente de Sigo te avisa aquí si algo falla o está por fallar." }); } }
+  for (const u of (r && r.result) || []) { VG.offset = u.update_id + 1; const c = u.message && u.message.chat; if (c && c.id) { VG.chat = String(c.id); try { fs.writeFileSync(F_CHAT, VG.chat); } catch { } vgNube(VG.chat); await tg("sendMessage", { chat_id: VG.chat, text: "✅ Listo. Desde ahora el puente de Sigo te avisa aquí si algo falla o está por fallar." }); } }
 }
 let VCTX = null;
 async function enviarAviso(texto) {
@@ -470,6 +482,7 @@ function revisar() {
 }
 export function vigia(ctx) {
   VCTX = ctx; vgLeer();
+  setTimeout(vgChat, 5000);
   setInterval(vgLeer, 60000);
   setInterval(() => { vgChat(); }, 20000);
   setTimeout(() => avisar("inicio", "🟢 El puente de Sigo se inició" + (VG.tok ? "" : " (Telegram aún sin configurar)") + ". Si no esperabas esto, la PC o el puente se reiniciaron.", 10), 90000);

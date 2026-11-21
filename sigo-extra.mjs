@@ -398,10 +398,23 @@ async function tg(metodo, datos) {
   if (!VG.tok) return null;
   try { const r = await fetch("https://api.telegram.org/bot" + VG.tok + "/" + metodo, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(datos || {}) }); return await r.json(); } catch { return null; }
 }
-async function vgChat() { /* detecta el chat del dueño cuando le escribe al bot */
-  if (!VG.tok || VG.chat) return;
+async function vgChat() { /* lee lo que el dueño le escribe al bot: /start conecta el chat; /estado o "estado" responde cómo va el puente */
+  if (!VG.tok) return;
   const r = await tg("getUpdates", { offset: VG.offset, timeout: 0 });
-  for (const u of (r && r.result) || []) { VG.offset = u.update_id + 1; const c = u.message && u.message.chat; if (c && c.id) { VG.chat = String(c.id); try { fs.writeFileSync(F_CHAT, VG.chat); } catch { } vgNube(VG.chat); await tg("sendMessage", { chat_id: VG.chat, text: "✅ Listo. Desde ahora el puente de Sigo te avisa aquí si algo falla o está por fallar." }); } }
+  for (const u of (r && r.result) || []) {
+    VG.offset = u.update_id + 1; const c = u.message && u.message.chat; if (!c || !c.id) continue;
+    if (!VG.chat) { VG.chat = String(c.id); try { fs.writeFileSync(F_CHAT, VG.chat); } catch { } vgNube(VG.chat); await tg("sendMessage", { chat_id: VG.chat, text: "✅ Listo. Desde ahora el puente de Sigo te avisa aquí si algo falla o está por fallar.\nEscribe estado cuando quieras ver cómo va." }); continue; }
+    if (String(c.id) !== VG.chat) continue;
+    await tg("sendMessage", { chat_id: VG.chat, text: vgEstado() });
+  }
+}
+export function vgEstado() {
+  const L = limaHora(), hoy = r => new Date(Date.parse(r.ts) - 5 * 3600000).toISOString().slice(0, 10) === L.dia;
+  const est = { open: "✅ conectado", qr: "🔴 desvinculado (pide QR)", connecting: "🟡 conectando", off: "🔴 sin conexión" };
+  const lineas = [...VCTX.sellers()].map(sl => { const R = sl.DATA.results.filter(hoy), ok = R.filter(r => r.ok).length, q = sl.queue.length;
+    return "• " + vgNom(sl.email) + ": " + (est[sl.st.state] || sl.st.state) + " · hoy " + ok + " enviados" + (R.length - ok ? ", " + (R.length - ok) + " fallidos" : "") + (q ? " · " + q + " en cola" : "") + (sl.paused ? " · PAUSADO" : ""); });
+  let mem = ""; try { mem = " · memoria libre " + Math.round(os.freemem() / os.totalmem() * 100) + "%"; } catch { }
+  return "📊 Puente de Sigo (" + String(L.h).padStart(2, "0") + ":" + String(L.m).padStart(2, "0") + ")\n" + (lineas.join("\n") || "Sin vendedores conectados") + "\n" + (VCTX.publicUrl() ? "🌐 túnel ok" : "🔴 túnel caído") + mem;
 }
 let VCTX = null;
 async function enviarAviso(texto) {

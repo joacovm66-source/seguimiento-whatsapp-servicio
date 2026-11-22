@@ -423,7 +423,7 @@ export function vgFoto() {
       descanso_hasta: sl.breakUntil > ahora ? hLima(sl.breakUntil) : "", en_cola: sl.queue.length, enviando_ahora: !!sl.running && sl.queue.length > 0,
       enviados_hoy_ok: R.length - malos.length, fallidos_hoy: malos.length, ultimo_envio: ult ? hLima(ult.ts) + (ult.ok ? " ok" : " falló") : "",
       ultimos_fallos: malos.slice(-5).map(r => hLima(r.ts) + " " + String(r.to || "").slice(-9) + ": " + (r.err || "?")),
-      contador_tope_hoy: sl.DATA.sentToday || 0, ultimos_cortes: sl.motivosCierre || [], tope_dia: Math.min(VCTX.cfg.dailyCap, (sl.acc && sl.acc.tope_dia) || Infinity) };
+      contador_tope_hoy: sl.DATA.sentToday || 0, cortes_guardados: (sl.DATA.cortes || []).slice(-8), desvinculado_desde: sl.DATA.desvinculado || (sl.st.state === "qr" || /cerró la sesión/i.test(sl.st.err || "") ? "antes de que el puente guardara motivos (22/11)" : ""), tope_dia: Math.min(VCTX.cfg.dailyCap, (sl.acc && sl.acc.tope_dia) || Infinity) };
   });
   let memoria = ""; try { memoria = Math.round(os.freemem() / os.totalmem() * 100) + "% libre"; } catch { }
   return { hora_lima: String(L.h).padStart(2, "0") + ":" + String(L.m).padStart(2, "0"), fecha: L.dia, tunel: VCTX.publicUrl() ? "ok" : "caído", memoria_pc: memoria,
@@ -484,6 +484,9 @@ const MOTIVO = { 401: "cerraron la sesión desde el teléfono o WhatsApp la expu
 export const vgMotivo = c => c ? (MOTIVO[c] || "código " + c) + " [" + c + "]" : "";
 export function vigiaCierre(sl, code) {
   const v = vgS(sl); v.cierres.push(Date.now()); v.ultCod = code; v.motivos = (v.motivos || []).concat(vgMotivo(code) + " " + hLima(Date.now())).slice(-5); sl.motivosCierre = v.motivos;
+  try { /* se guarda en datos.json: el motivo no se pierde aunque el puente se reinicie */
+    const L = limaHora(); sl.DATA.cortes = (sl.DATA.cortes || []).concat({ fecha: L.dia, hora: hLima(Date.now()), codigo: code || 0, motivo: vgMotivo(code) || "sin código" }).slice(-15);
+    if (code === 401) sl.DATA.desvinculado = { fecha: L.dia, hora: hLima(Date.now()), motivo: vgMotivo(code) }; } catch { }
   if (code === 440) avisar("dup:" + sl.email, "🔴 El WhatsApp de " + vgNom(sl.email) + " se abrió en OTRO puente u otra PC al mismo tiempo. Deja un solo INICIAR.bat abierto (si hay dos, se botan entre ellos y WhatsApp termina desvinculando).", 120);
   if (code === 403) avisar("restr:" + sl.email, "🔴 WhatsApp RESTRINGIÓ el número de " + vgNom(sl.email) + ". Se pausaron sus envíos. Revisar su teléfono.", 360);
 }

@@ -111,7 +111,7 @@ async function startWA(sl) {
     sock.ev.on("connection.update", async u => {
       if (gen !== sl.gen) return;
       if (u.qr) { sl.st.state = "qr"; sl.st.qr = await QRCode.toDataURL(u.qr, { margin: 2, scale: 6, errorCorrectionLevel: "M" }); log(sl.email, "espera que escaneen el QR"); }
-      if (u.connection === "open") { sl.retry = 0; sl.st.state = "open"; sl.st.qr = null; sl.st.err = ""; sl.st.me = digits((sock.user && sock.user.id || "").split(":")[0].split("@")[0]); log(sl.email, "WhatsApp conectado:", sl.st.me); if (sl.queue.length) worker(sl); }
+      if (u.connection === "open") { sl.retry = 0; sl.DATA.desvinculado = null; sl.st.state = "open"; sl.st.qr = null; sl.st.err = ""; sl.st.me = digits((sock.user && sock.user.id || "").split(":")[0].split("@")[0]); log(sl.email, "WhatsApp conectado:", sl.st.me); if (sl.queue.length) worker(sl); }
       if (u.connection === "close") {
         const code = u.lastDisconnect && u.lastDisconnect.error && u.lastDisconnect.error.output && u.lastDisconnect.error.output.statusCode;
         log(sl.email, "conexión cerrada, código", code, String(u.lastDisconnect && u.lastDisconnect.error && u.lastDisconnect.error.message || "").slice(0, 120));
@@ -320,7 +320,7 @@ server.listen(PORT, HOST, () => {
   SX.config({ url: CFG.supabaseUrl, secret: CFG.secret });
   openTunnel(); publish();
   if (!MOCK) SX.vigia({ supa: { url: CFG.supabaseUrl, key: CFG.supabaseKey, secret: CFG.secret }, sellers: () => sellers.values(), cfg: CFG, publicUrl: () => publicUrl, restantes, log, worker: sl => worker(sl) });
-  if (!MOCK) SX.autoActualizar(() => [...sellers.values()].some(x => x.running && x.queue.length), (...a) => log(...a));
+  if (!MOCK) SX.autoActualizar(() => [...sellers.values()].some(x => x.running && x.queue.length && x.st.state === "open" && !x.paused), (...a) => log(...a));
   (async () => { await restoreAll(); if (!MOCK) for (const d of fs.readdirSync(VEND)) { try { if (fs.existsSync(path.join(VEND, d, "sesion", "creds.json"))) { const m = readJson(path.join(VEND, d, "email.json"), null); if (m && m.email) startWA(seller(m.email)); } } catch { } } })();
 });
 /* recordar el correo de cada carpeta para reconectar al reiniciar */

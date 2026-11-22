@@ -111,14 +111,17 @@ async function startWA(sl) {
     sock.ev.on("connection.update", async u => {
       if (gen !== sl.gen) return;
       if (u.qr) { sl.st.state = "qr"; sl.st.qr = await QRCode.toDataURL(u.qr, { margin: 2, scale: 6, errorCorrectionLevel: "M" }); log(sl.email, "espera que escaneen el QR"); }
-      if (u.connection === "open") { sl.st.state = "open"; sl.st.qr = null; sl.st.err = ""; sl.st.me = digits((sock.user && sock.user.id || "").split(":")[0].split("@")[0]); log(sl.email, "WhatsApp conectado:", sl.st.me); if (sl.queue.length) worker(sl); }
+      if (u.connection === "open") { sl.retry = 0; sl.st.state = "open"; sl.st.qr = null; sl.st.err = ""; sl.st.me = digits((sock.user && sock.user.id || "").split(":")[0].split("@")[0]); log(sl.email, "WhatsApp conectado:", sl.st.me); if (sl.queue.length) worker(sl); }
       if (u.connection === "close") {
         const code = u.lastDisconnect && u.lastDisconnect.error && u.lastDisconnect.error.output && u.lastDisconnect.error.output.statusCode;
         log(sl.email, "conexión cerrada, código", code, String(u.lastDisconnect && u.lastDisconnect.error && u.lastDisconnect.error.message || "").slice(0, 120));
         sl.st.state = "off"; sl.st.qr = null; sl.st.me = ""; sl.started = false; SX.vigiaCierre(sl, code);
         if (code === 403) { sl.st.err = "WhatsApp restringió este número. No envíe más por ahora y revise el teléfono."; log(sl.email, "NÚMERO RESTRINGIDO por WhatsApp"); sl.paused = true; return; }
         if (code === B.DisconnectReason.loggedOut) { try { fs.rmSync(sl.auth, { recursive: true, force: true }); } catch { } log(sl.email, "sesión cerrada desde el teléfono"); sl.st.err = "Se cerró la sesión desde el teléfono. Escanee otra vez."; }
-        else { sl.st.err = "Reconectando…"; setTimeout(() => startWA(sl), 3000); }
+        else if (code === 440) { sl.st.err = "Esta cuenta se abrió en otro puente u otra PC. Reintento en 2 min."; log(sl.email, "conflicto 440: otra sesión abierta"); setTimeout(() => startWA(sl), 120000); }
+        else { /* internet u otro corte: reintenta solo, cada vez con más espera (3 s → 1 min) para no saturar a WhatsApp */
+          sl.retry = (sl.retry || 0) + 1; const ms = Math.min(60000, 3000 * Math.pow(2, Math.min(sl.retry - 1, 5)));
+          sl.st.err = "Reconectando…"; setTimeout(() => startWA(sl), ms); }
       }
     });
     SX.bandeja(sl, sock, B);
@@ -138,8 +141,14 @@ async function startWA(sl) {
         addReply(sl, num, text, jid);
       }
     });
-  } catch (e) { sl.started = false; sl.st.err = String(e.message || e); console.error(e); }
+  } catch (e) { sl.started = false; sl.st.err = String(e.message || e); console.error(e); setTimeout(() => startWA(sl), 30000); }
 }
+/* Guardián: si un WhatsApp quedó sin conexión y nadie lo está reconectando (p. ej. tras suspender la PC o sin internet), lo vuelve a iniciar */
+if (!MOCK) setInterval(() => { for (const sl of sellers.values()) { try {
+  if (sl.started || sl.st.state === "open" || sl.st.state === "qr") continue;
+  if (/cerró la sesión|restringió|otro puente/i.test(sl.st.err || "")) continue;
+  if (fs.existsSync(path.join(sl.auth, "creds.json"))) { log(sl.email, "guardián: reconectando"); startWA(sl); }
+} catch { } } }, 90000);
 
 /* ----- Cola de envío con pausas (cuida cada número) ----- */
 /* foto o video de una difusión (se descarga una vez y se reutiliza) */
@@ -175,6 +184,9 @@ async function worker(sl) {
         }
       }
     } catch (e) { err = String(e.message || e).slice(0, 120); }
+    /* si falló porque se cayó la conexión (internet, WhatsApp reconectando), NO se pierde: queda en la cola y sale al reconectar */
+    if (!ok && (st.state !== "open" || /connection (closed|lost)|timed? ?out|not open|socket|stream errored|precondition|ECONN|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|fetch failed/i.test(err)) && (it.tries = (it.tries || 0) + 1) <= 5) {
+      log(sl.email, "corte al enviar a", it.to, "→ queda en cola (", err, ")"); await sleep(5000); continue; }
     queue.shift();
     DATA.results.push({ seq: ++DATA.seq, id: it.id, to: it.to, ok, err, ts: new Date().toISOString() }); sl.seen.add(it.id);
     if (ok) { DATA.sentToday++; sl.sinceBreak++; contarEnvio(sl.email); }

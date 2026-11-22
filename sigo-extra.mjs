@@ -376,7 +376,7 @@ export function atencion(sl, sock) {
      línea 1: token del bot de Telegram (de @BotFather)
      línea 2: número de WhatsApp que recibe los avisos (por defecto el del dueño)
    El chat de Telegram se detecta solo: basta escribirle /start al bot. */
-const VG = { tok: "", chat: "", wa: "51967664627", from: "ajvillal@trener.edu.pe", ult: new Map(), errores: [], s: new Map(), offset: 0, sinUrl: 0, resumen: "" };
+const VG = { tok: "", chat: "", wa: "51967664627", from: "ajvillal@trener.edu.pe", ult: new Map(), hist: [], silencioHasta: 0, errores: [], s: new Map(), offset: 0, sinUrl: 0, resumen: "" };
 const F_ALE = path.join(DIR, "alertas.txt"), F_CHAT = path.join(STORE, "datos-alertas-chat.txt");
 function vgLeer() {
   let local = false;
@@ -407,9 +407,12 @@ async function vgChat() { /* lee lo que el dueño le escribe al bot: /start cone
     if (String(c.id) !== VG.chat) continue;
     const txt = String(u.message.text || "").trim(); if (!txt) continue;
     if (/^\/?(estado|status)$/i.test(txt)) { await tg("sendMessage", { chat_id: VG.chat, text: vgEstado() }); continue; }
+    if (/^\/?(ayuda|help|start|comandos)$/i.test(txt)) { await tg("sendMessage", { chat_id: VG.chat, text: AYUDA }); continue; }
+    if (/^\/?avisos$/i.test(txt)) { await tg("sendMessage", { chat_id: VG.chat, text: VG.hist.length ? "🗒️ Avisos de hoy:\n" + VG.hist.slice(-25).map(a => a.h + " " + a.t).join("\n") : "Hoy no hubo avisos." }); continue; }
     vgPreguntar(txt);
   }
 }
+const AYUDA = "🤖 Puedes escribirme normal, como a una persona. Ejemplos:\n• ¿cómo van los envíos de Nadia?\n• ¿quién está desconectado y por qué?\n• ¿cuántos clientes respondieron hoy?\n• ¿hay chats esperando asesor?\n• ¿por qué fallaron los mensajes de ecuno?\n• pausa a todos / reanuda a Nadia\n• silencia los avisos 3 horas / vuelve a avisar\n• reinicia el puente\nAtajos: estado · avisos · ayuda\n\n🔔 Solo suenan los problemas (desvinculado, número restringido, cola trabada, sin conexión con mensajes pendientes, puente caído). Lo demás llega en silencio.";
 /* Preguntas en lenguaje natural: el puente manda la foto del estado a la función "vigia-ia" (Gemini) y ejecuta las acciones permitidas */
 const VHIST = [];
 const hLima = t => { if (!t) return ""; const d = new Date((typeof t === "number" ? t : Date.parse(t)) - 5 * 3600000); return d.toISOString().slice(11, 16); };
@@ -430,17 +433,19 @@ function vgBuscar(email) { email = String(email || "").toLowerCase(); const l = 
 async function vgPreguntar(txt) {
   const S = VCTX.supa; try { await tg("sendChatAction", { chat_id: VG.chat, action: "typing" }); } catch { }
   let j = null;
-  try { const r = await fetch(S.url + "/functions/v1/vigia-ia", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ secret: S.secret, pregunta: txt, estado: vgFoto(), historial: VHIST }) }); j = await r.json(); } catch { }
+  try { const r = await fetch(S.url + "/functions/v1/vigia-ia", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ secret: S.secret, pregunta: txt, estado: vgFoto(), avisos: VG.hist.slice(-30), historial: VHIST }) }); j = await r.json(); } catch { }
   if (!j || !j.ok) { await tg("sendMessage", { chat_id: VG.chat, text: "No pude pensar la respuesta ahora (" + ((j && j.error) || "sin conexión") + "). Te paso el estado:\n\n" + vgEstado() }); return; }
   const hechos = [];
   for (const a of j.acciones || []) {
+    if (a.tipo === "silenciar") { const h = Math.max(0.5, Math.min(24, Number(a.horas) || 2)); VG.silencioHasta = Date.now() + h * 3600000; hechos.push("🔕 Avisos en silencio por " + h + " h (los muy graves igual suenan)."); continue; }
+    if (a.tipo === "sonido") { VG.silencioHasta = 0; hechos.push("🔔 Avisos con sonido otra vez."); continue; }
     if (a.tipo === "reiniciar") { hechos.push("🔄 Reiniciando el puente (vuelve en ~1 min, la cola se guarda)."); setTimeout(() => process.exit(0), 3000); continue; }
     const sl = vgBuscar(a.email); if (!sl) { hechos.push("⚠️ No encontré al vendedor " + (a.email || "?") + "."); continue; }
     if (a.tipo === "pausar") { sl.paused = true; hechos.push("⏸️ Pausé los envíos de " + vgNom(sl.email) + "."); VCTX.log("Telegram: pausado", sl.email); }
     if (a.tipo === "reanudar") { sl.paused = false; if (/restringió/i.test(sl.st.err || "")) sl.st.err = ""; if (VCTX.worker) VCTX.worker(sl); hechos.push("▶️ Reanudé los envíos de " + vgNom(sl.email) + "."); VCTX.log("Telegram: reanudado", sl.email); }
   }
   const resp = j.respuesta + (hechos.length ? "\n\n" + hechos.join("\n") : "");
-  VHIST.push({ quien: "yo", t: txt }, { quien: "bot", t: resp }); while (VHIST.length > 8) VHIST.shift();
+  VHIST.push({ quien: "yo", t: txt }, { quien: "bot", t: resp }); while (VHIST.length > 10) VHIST.shift();
   await tg("sendMessage", { chat_id: VG.chat, text: resp });
 }
 export function vgEstado() {
@@ -452,17 +457,25 @@ export function vgEstado() {
   return "📊 Puente de Sigo (" + String(L.h).padStart(2, "0") + ":" + String(L.m).padStart(2, "0") + ")\n" + (lineas.join("\n") || "Sin vendedores conectados") + "\n" + (VCTX.publicUrl() ? "🌐 túnel ok" : "🔴 túnel caído") + mem;
 }
 let VCTX = null;
-async function enviarAviso(texto) {
-  if (VG.tok && VG.chat) await tg("sendMessage", { chat_id: VG.chat, text: texto });
+async function enviarAviso(texto, fuerte) {
+  if (VG.tok && VG.chat) await tg("sendMessage", { chat_id: VG.chat, text: texto, disable_notification: !fuerte });
+  if (!fuerte) return; /* lo rutinario solo queda en Telegram, sin sonido y sin WhatsApp */
   try { /* por WhatsApp, desde la línea del dueño (si está conectada) */
     const sl = VCTX && [...VCTX.sellers()].find(x => x.email === VG.from && x.st.state === "open" && x.sock);
     if (sl && VG.wa) { const m = await sl.sock.sendMessage(VG.wa + "@s.whatsapp.net", { text: "🤖 Sigo · " + texto }); try { (sl.mine = sl.mine || new Set()).add(m.key.id); } catch { } }
   } catch { }
 }
 /* key: evita repetir el mismo aviso; cada: minutos mínimos entre avisos iguales */
-export function avisar(key, texto, cada = 60) {
+/* Suenan solo los problemas (🔴). Preventivos 🟡, avisos ✅/🟢 y el resumen llegan en silencio. "silenciar" calla todo salvo lo muy grave. */
+const GRAVE = /^(restr|dup|tunel|trabado|plan0)/;
+export function avisar(key, texto, cada = 60, fuerte) {
   const t = VG.ult.get(key) || 0; if (Date.now() - t < cada * 60000) return;
-  VG.ult.set(key, Date.now()); (VCTX && VCTX.log || console.log)("AVISO:", texto); enviarAviso(texto);
+  VG.ult.set(key, Date.now()); (VCTX && VCTX.log || console.log)("AVISO:", texto);
+  if (fuerte === undefined) fuerte = /^🔴/.test(texto);
+  if (fuerte && VG.silencioHasta > Date.now() && !GRAVE.test(key)) fuerte = false;
+  const L = limaHora(); VG.hist = VG.hist.filter(a => a.d === L.dia);
+  VG.hist.push({ d: L.dia, h: String(L.h).padStart(2, "0") + ":" + String(L.m).padStart(2, "0"), t: texto.slice(0, 200), sono: !!fuerte }); if (VG.hist.length > 60) VG.hist.shift();
+  enviarAviso(texto, fuerte);
 }
 const vgNom = e => String(e || "").split("@")[0];
 const limaHora = () => { const d = new Date(Date.now() - 5 * 3600000); return { h: d.getUTCHours(), m: d.getUTCMinutes(), dia: d.toISOString().slice(0, 10) }; };
@@ -471,6 +484,7 @@ const MOTIVO = { 401: "cerraron la sesión desde el teléfono o WhatsApp la expu
 export const vgMotivo = c => c ? (MOTIVO[c] || "código " + c) + " [" + c + "]" : "";
 export function vigiaCierre(sl, code) {
   const v = vgS(sl); v.cierres.push(Date.now()); v.ultCod = code; v.motivos = (v.motivos || []).concat(vgMotivo(code) + " " + hLima(Date.now())).slice(-5); sl.motivosCierre = v.motivos;
+  if (code === 440) avisar("dup:" + sl.email, "🔴 El WhatsApp de " + vgNom(sl.email) + " se abrió en OTRO puente u otra PC al mismo tiempo. Deja un solo INICIAR.bat abierto (si hay dos, se botan entre ellos y WhatsApp termina desvinculando).", 120);
   if (code === 403) avisar("restr:" + sl.email, "🔴 WhatsApp RESTRINGIÓ el número de " + vgNom(sl.email) + ". Se pausaron sus envíos. Revisar su teléfono.", 360);
 }
 function vgS(sl) { let v = VG.s.get(sl.email); if (!v) { v = { cierres: [], offDesde: 0, qrDesde: 0, colaAntes: 0, ini: 0, ultRes: Date.now(), ultSeq: 0, total: 0, alertado: false }; VG.s.set(sl.email, v); } return v; }
@@ -482,7 +496,7 @@ function revisar() {
     v.cierres = v.cierres.filter(t => ahora - t < 15 * 60000);
     /* --- conexión --- */
     if (st.state === "open") {
-      if (v.alertado) { avisar("ok:" + sl.email, "✅ El WhatsApp de " + n + " volvió a conectarse." + (q ? " Sigue con " + q + " pendientes." : ""), 5); v.alertado = false; }
+      if (v.alertado) { avisar("ok:" + sl.email, "✅ El WhatsApp de " + n + " volvió a conectarse" + (v.ultCod ? " (último corte: " + vgMotivo(v.ultCod) + ")" : "") + "." + (q ? " Sigue con " + q + " pendientes." : ""), 5); v.alertado = false; }
       v.offDesde = 0; v.qrDesde = 0; v.vivo = true;
     } else if (st.state === "qr") {
       v.qrDesde = v.qrDesde || ahora;
@@ -490,7 +504,7 @@ function revisar() {
     } else {
       v.offDesde = v.offDesde || ahora;
       if (/cerró la sesión/i.test(st.err || "")) { avisar("out:" + sl.email, "🔴 Se desvinculó el WhatsApp de " + n + " (" + (vgMotivo(v.ultCod) || "cerraron la sesión desde el teléfono") + ")." + (q ? " Tiene " + q + " pendientes." : "") + " Debe escanear el QR otra vez.", q || v.vivo ? 180 : 1440); v.alertado = true; }
-      else if ((q || v.vivo) && ahora - v.offDesde > 4 * 60000 && !/restringió/i.test(st.err || "")) { avisar("off:" + sl.email, "🔴 El WhatsApp de " + n + " lleva " + Math.round((ahora - v.offDesde) / 60000) + " min sin conexión." + (q ? " Tiene " + q + " pendientes." : ""), 60); v.alertado = true; }
+      else if ((q || v.vivo) && ahora - v.offDesde > 10 * 60000 && !/restringió|otro puente/i.test(st.err || "")) { avisar("off:" + sl.email, (q ? "🔴" : "🟡") + " El WhatsApp de " + n + " lleva " + Math.round((ahora - v.offDesde) / 60000) + " min sin conexión (el puente sigue reintentando solo)." + (q ? " Tiene " + q + " pendientes; salen solos al volver." : ""), 60); v.alertado = true; }
     }
     if (v.cierres.length >= 4) avisar("loop:" + sl.email, "🟡 PREVENTIVO: el WhatsApp de " + n + " se reconectó " + v.cierres.length + " veces en 15 min. Puede desvincularse pronto. Revisar internet de la PC y que su teléfono tenga señal.", 60);
     /* --- avance de la cola --- */

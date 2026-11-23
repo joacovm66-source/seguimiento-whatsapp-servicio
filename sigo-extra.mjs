@@ -419,7 +419,7 @@ const hLima = t => { if (!t) return ""; const d = new Date((typeof t === "number
 export function vgFoto() {
   const L = limaHora(), hoy = r => new Date(Date.parse(r.ts) - 5 * 3600000).toISOString().slice(0, 10) === L.dia, ahora = Date.now();
   const vendedores = [...VCTX.sellers()].map(sl => { const R = sl.DATA.results.filter(hoy), malos = R.filter(r => !r.ok), ult = sl.DATA.results[sl.DATA.results.length - 1];
-    return { vendedor: vgNom(sl.email), email: sl.email, whatsapp: sl.st.me || "", estado: sl.st.state, aviso: sl.st.err || "", pausado: !!sl.paused,
+    return { vendedor: vgNom(sl.email), email: sl.email, whatsapp: sl.st.me || "", estado: sl.st.state, aviso: sl.st.err || "", pausado: !!sl.paused, pausado_por: sl.paused ? (sl.pausa ? sl.pausa.por + " a las " + hLima(sl.pausa.ts) : "no se sabe (se pausó antes de que el puente guardara quién)") : "",
       descanso_hasta: sl.breakUntil > ahora ? hLima(sl.breakUntil) : "", en_cola: sl.queue.length, enviando_ahora: !!sl.running && sl.queue.length > 0,
       enviados_hoy_ok: R.length - malos.length, fallidos_hoy: malos.length, ultimo_envio: ult ? hLima(ult.ts) + (ult.ok ? " ok" : " falló") : "",
       ultimos_fallos: malos.slice(-5).map(r => hLima(r.ts) + " " + String(r.to || "").slice(-9) + ": " + (r.err || "?")),
@@ -441,8 +441,8 @@ async function vgPreguntar(txt) {
     if (a.tipo === "sonido") { VG.silencioHasta = 0; hechos.push("🔔 Avisos con sonido otra vez."); continue; }
     if (a.tipo === "reiniciar") { hechos.push("🔄 Reiniciando el puente (vuelve en ~1 min, la cola se guarda)."); setTimeout(() => process.exit(0), 3000); continue; }
     const sl = vgBuscar(a.email); if (!sl) { hechos.push("⚠️ No encontré al vendedor " + (a.email || "?") + "."); continue; }
-    if (a.tipo === "pausar") { sl.paused = true; hechos.push("⏸️ Pausé los envíos de " + vgNom(sl.email) + "."); VCTX.log("Telegram: pausado", sl.email); }
-    if (a.tipo === "reanudar") { sl.paused = false; if (/restringió/i.test(sl.st.err || "")) sl.st.err = ""; if (VCTX.worker) VCTX.worker(sl); hechos.push("▶️ Reanudé los envíos de " + vgNom(sl.email) + "."); VCTX.log("Telegram: reanudado", sl.email); }
+    if (a.tipo === "pausar") { sl.paused = true; sl.pausa = { por: "tú (Joaquin) desde Telegram", ts: Date.now() }; hechos.push("⏸️ Pausé los envíos de " + vgNom(sl.email) + "."); VCTX.log("Telegram: pausado", sl.email); }
+    if (a.tipo === "reanudar") { sl.paused = false; sl.pausa = null; if (/restringió/i.test(sl.st.err || "")) sl.st.err = ""; if (VCTX.worker) VCTX.worker(sl); hechos.push("▶️ Reanudé los envíos de " + vgNom(sl.email) + "."); VCTX.log("Telegram: reanudado", sl.email); }
   }
   const resp = j.respuesta + (hechos.length ? "\n\n" + hechos.join("\n") : "");
   VHIST.push({ quien: "yo", t: txt }, { quien: "bot", t: resp }); while (VHIST.length > 10) VHIST.shift();
@@ -452,7 +452,7 @@ export function vgEstado() {
   const L = limaHora(), hoy = r => new Date(Date.parse(r.ts) - 5 * 3600000).toISOString().slice(0, 10) === L.dia;
   const est = { open: "✅ conectado", qr: "🔴 desvinculado (pide QR)", connecting: "🟡 conectando", off: "🔴 sin conexión" };
   const lineas = [...VCTX.sellers()].map(sl => { const R = sl.DATA.results.filter(hoy), ok = R.filter(r => r.ok).length, q = sl.queue.length;
-    return "• " + vgNom(sl.email) + ": " + (est[sl.st.state] || sl.st.state) + " · hoy " + ok + " enviados" + (R.length - ok ? ", " + (R.length - ok) + " fallidos" : "") + (q ? " · " + q + " en cola" : "") + (sl.paused ? " · PAUSADO" : ""); });
+    return "• " + vgNom(sl.email) + ": " + (est[sl.st.state] || sl.st.state) + " · hoy " + ok + " enviados" + (R.length - ok ? ", " + (R.length - ok) + " fallidos" : "") + (q ? " · " + q + " en cola" : "") + (sl.paused ? " · PAUSADO" + (sl.pausa ? " (por " + sl.pausa.por + ", " + hLima(sl.pausa.ts) + ")" : "") : ""); });
   let mem = ""; try { mem = " · memoria libre " + Math.round(os.freemem() / os.totalmem() * 100) + "%"; } catch { }
   return "📊 Puente de Sigo (" + String(L.h).padStart(2, "0") + ":" + String(L.m).padStart(2, "0") + ")\n" + (lineas.join("\n") || "Sin vendedores conectados") + "\n" + (VCTX.publicUrl() ? "🌐 túnel ok" : "🔴 túnel caído") + mem;
 }

@@ -106,7 +106,7 @@ async function startWA(sl) {
     const { state, saveCreds } = await B.useMultiFileAuthState(sl.auth);
     let version; try { version = (await B.fetchLatestBaileysVersion()).version; } catch { }
     sl.st.state = "connecting";
-    const sock = sl.sock = makeWASocket({ auth: state, version, logger: pino({ level: "silent" }), printQRInTerminal: false, browser: B.Browsers ? B.Browsers.ubuntu("Chrome") : ["Ubuntu", "Chrome", "22.04.4"] /* fijo: cambiarlo a mitad de la vinculación hace que WhatsApp la rechace */, markOnlineOnConnect: false, syncFullHistory: true });
+    const sock = sl.sock = makeWASocket({ auth: state, version, logger: pino({ level: "silent" }), printQRInTerminal: false, browser: SX.navegador(sl.auth) /* fijo por sesión: nunca cambia a mitad de una vinculación */, markOnlineOnConnect: false, syncFullHistory: true });
     sock.ev.on("creds.update", async () => { await saveCreds(); persist(sl); });
     sock.ev.on("connection.update", async u => {
       if (gen !== sl.gen) return;
@@ -117,7 +117,8 @@ async function startWA(sl) {
         log(sl.email, "conexión cerrada, código", code, String(u.lastDisconnect && u.lastDisconnect.error && u.lastDisconnect.error.message || "").slice(0, 120));
         sl.st.state = "off"; sl.st.qr = null; sl.st.me = ""; sl.started = false; SX.vigiaCierre(sl, code);
         if (code === 403) { sl.st.err = "WhatsApp restringió este número. No envíe más por ahora y revise el teléfono."; log(sl.email, "NÚMERO RESTRINGIDO por WhatsApp"); sl.paused = true; sl.pausa = { por: "WhatsApp restringió el número (código 403)", ts: Date.now() }; return; }
-        if (code === B.DisconnectReason.loggedOut) { try { fs.rmSync(sl.auth, { recursive: true, force: true }); } catch { } log(sl.email, "sesión cerrada desde el teléfono"); sl.st.err = "Se cerró la sesión desde el teléfono. Escanee otra vez."; }
+        if (code === B.DisconnectReason.loggedOut && (!sl.r401 || Date.now() - sl.r401 > 10 * 60000)) { sl.r401 = Date.now(); log(sl.email, "401: reintento una vez antes de pedir QR"); sl.st.err = "Reconectando…"; setTimeout(() => startWA(sl), 20000); }
+        else if (code === B.DisconnectReason.loggedOut) { sl.r401 = 0; try { fs.rmSync(sl.auth, { recursive: true, force: true }); } catch { } log(sl.email, "sesión cerrada desde el teléfono"); sl.st.err = "Se cerró la sesión desde el teléfono. Escanee otra vez."; }
         else if (code === 440) { sl.st.err = "Esta cuenta se abrió en otro puente u otra PC. Reintento en 2 min."; log(sl.email, "conflicto 440: otra sesión abierta"); setTimeout(() => startWA(sl), 120000); }
         else { /* internet u otro corte: reintenta solo, cada vez con más espera (3 s → 1 min) para no saturar a WhatsApp */
           sl.retry = (sl.retry || 0) + 1; const ms = Math.min(60000, 3000 * Math.pow(2, Math.min(sl.retry - 1, 5)));

@@ -1,0 +1,86 @@
+/* Pruebas automáticas del puente. Correr: npm test
+   Regla: todo cambio nuevo del puente agrega aquí su prueba antes de publicarse. */
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+const SX = await import("../sigo-extra.mjs");
+const fuente = fs.readFileSync(new URL("../puente.js", import.meta.url), "utf8");
+const vend = (email = "prueba" + Math.random() + "@x.com") => ({ email, DATA: { results: [] }, queue: [], st: {} });
+
+test("variar: expande {a|b}, cambia saludo y no toca el resto", () => {
+  const t = "🇵🇪 ¡Hola, Ana!\n{Te escribo|Te cuento} por el {condominio|proyecto}.\nPrecio: S/ 100\nFin";
+  const saludos = new Set();
+  for (let i = 0; i < 60; i++) {
+    const v = SX.variar(t);
+    assert.ok(!/\{[^}]*\|[^}]*\}/.test(v), "quedó un {a|b} sin expandir");
+    assert.ok(v.includes("Precio: S/ 100"), "cambió un dato del mensaje");
+    assert.ok(/(Te escribo|Te cuento) por el (condominio|proyecto)/.test(v));
+    saludos.add(v.split(",")[0]);
+  }
+  assert.ok(saludos.size >= 2, "el saludo no varía");
+  assert.ok(SX.variar("Hola {nombre}").endsWith("{nombre}"), "tocó una llave sin opciones");
+});
+
+test("destinoSeguro: no envía a números sin WhatsApp (difusión)", async () => {
+  const sl = vend();
+  const no = { onWhatsApp: async () => [] }, si = { onWhatsApp: async () => [{ exists: true, jid: "51999@s.whatsapp.net" }] };
+  assert.equal((await SX.destinoSeguro(sl, no, "51999888777", true)).length, 0);
+  assert.equal((await SX.destinoSeguro(sl, si, "51999888777", true))[0].jid, "51999@s.whatsapp.net");
+});
+test("destinoSeguro: si WhatsApp falla, envía igual (no se pierden clientes)", async () => {
+  const r = await SX.destinoSeguro(vend(), { onWhatsApp: async () => { throw new Error("timeout"); } }, "51999888777", true);
+  assert.equal(r[0].jid, "51999888777@s.whatsapp.net");
+});
+test("destinoSeguro: si casi todos 'no existen' es falla de WhatsApp → envía igual", async () => {
+  const sl = vend(), no = { onWhatsApp: async () => [] };
+  for (let i = 0; i < 16; i++) await SX.destinoSeguro(sl, no, "5199988877" + (i % 10), true);
+  assert.equal((await SX.destinoSeguro(sl, no, "51999888777", true)).length, 1);
+});
+test("destinoSeguro: mensajes manuales siguen enviándose aunque no 'exista'", async () => {
+  const r = await SX.destinoSeguro(vend(), { onWhatsApp: async () => [] }, "51999888777", false);
+  assert.equal(r.length, 1);
+});
+
+test("escudo: normal → cuidado → freno según números sin WhatsApp", async () => {
+  SX._probarCon({ sellers: () => [], log: () => { } });
+  const sl = vend(), no = { onWhatsApp: async () => [] }, si = { onWhatsApp: async () => [{ exists: true, jid: "j" }] };
+  for (let i = 0; i < 10; i++) await SX.destinoSeguro(sl, si, "51999888777", true);
+  assert.equal(SX.escudoEstado(sl).nivel, 0);
+  for (let i = 0; i < 4; i++) await SX.destinoSeguro(sl, no, "51999888777", true);
+  assert.equal(SX.escudoEstado(sl).nivel, 1);
+  for (let i = 0; i < 8; i++) await SX.destinoSeguro(sl, no, "51999888777", true);
+  const e = SX.escudoEstado(sl); assert.equal(e.nivel, 2); assert.ok(e.frenoMs > 0, "no frenó");
+});
+
+test("navegador: vinculación nueva = Windows y NO cambia aunque ya exista creds.json", () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "nav-"));
+  assert.equal(SX.navegador(d)[0], "Windows");
+  fs.writeFileSync(path.join(d, "creds.json"), "{}");
+  assert.equal(SX.navegador(d)[0], "Windows", "cambió de nombre a mitad de la vinculación");
+});
+test("navegador: sesiones que ya existían siguen como Ubuntu", () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "nav-"));
+  fs.writeFileSync(path.join(d, "creds.json"), "{}");
+  assert.equal(SX.navegador(d)[0], "Ubuntu");
+});
+
+test("aviso al vendedor: llama a aviso-vendedor con la cola y no repite en 30 min", async () => {
+  const llamadas = []; const orig = globalThis.fetch;
+  globalThis.fetch = async (u, o) => { llamadas.push({ u, b: JSON.parse(o.body) }); return { json: async () => ({ ok: true, notificacion: true, correo: "ok" }) }; };
+  SX._probarCon({ supa: { url: "https://x.supabase.co", secret: "s" }, sellers: () => [], log: () => { } });
+  const sl = vend("jp@x.com");
+  await SX.avisarVendedor(sl, 585, "401", true);
+  assert.equal(llamadas.length, 1); assert.match(llamadas[0].u, /aviso-vendedor$/); assert.equal(llamadas[0].b.cola, 585);
+  await SX.avisarVendedor(sl, 585, "401", false);
+  assert.equal(llamadas.length, 1, "repitió el aviso antes de 30 min");
+  globalThis.fetch = orig;
+});
+
+test("puente.js: usa nombre fijo por sesión, reintenta el 401 y reporta diagnóstico", () => {
+  assert.match(fuente, /browser: SX\.navegador\(sl\.auth\)/);
+  assert.match(fuente, /401: reintento una vez antes de pedir QR/);
+  for (const k of ["err:", "cola:", "cortes:", "escudo:", "ver: SX.VERSION"]) assert.ok(fuente.includes(k), "presencia sin " + k);
+  assert.match(fuente, /destinoSeguro\(sl, sock, it\.to, masivo\)/);
+});

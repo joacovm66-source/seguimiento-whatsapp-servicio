@@ -14,7 +14,7 @@ const DIR = path.dirname(fileURLToPath(import.meta.url));
 const STORE = process.env.DATA_DIR || DIR;
 const MDIR = path.join(STORE, "media"); fs.mkdirSync(MDIR, { recursive: true });
 const F_LID = path.join(STORE, "lids.json");
-export const VERSION = "2026-11-24a";
+export const VERSION = "2026-11-24b";
 const digits = s => String(s || "").replace(/\D/g, "");
 let LIDS = {}; try { LIDS = JSON.parse(fs.readFileSync(F_LID, "utf8")) || {}; } catch { }
 let tLid = null; const guardarLids = () => { clearTimeout(tLid); tLid = setTimeout(() => { try { fs.writeFileSync(F_LID, JSON.stringify(LIDS)); } catch { } }, 1500); };
@@ -506,6 +506,7 @@ function revisar() {
       v.offDesde = 0; v.qrDesde = 0; v.vivo = true;
     } else if (st.state === "qr") {
       v.qrDesde = v.qrDesde || ahora;
+      if (q && ahora - v.qrDesde > 5 * 60000) avisarVendedor(sl, q, vgMotivo(v.ultCod));
       if (q && ahora - v.qrDesde > 3 * 60000) { avisar("qr:" + sl.email, "🔴 " + n + " tiene " + q + " mensajes pendientes pero su WhatsApp está DESVINCULADO (pide QR). Debe volver a conectarlo en Sigo.", 60); v.alertado = true; }
     } else {
       v.offDesde = v.offDesde || ahora;
@@ -628,3 +629,32 @@ export function escudoResumen(sl) {
   const s = escudoEstado(sl);
   return "Antes del corte: " + hora + " enviados en la última hora, llegaban " + s.entrega + "%, " + s.sin_whatsapp + "% de números sin WhatsApp." + (hora >= 40 ? " Lo más probable: WhatsApp sospechó spam por la difusión." : hora === 0 ? " No estaba enviando: probablemente lo cerraron desde el teléfono o se pasó de 4 dispositivos." : "");
 }
+
+/* ===== Nombre del dispositivo (24/11) =====
+   Se decide UNA vez por sesión y se guarda en navegador.json, así nunca cambia a mitad de una vinculación.
+   Sesiones que ya existían → Ubuntu Chrome (no se tocan). Vinculaciones nuevas → Windows Chrome. */
+export function navegador(authDir) {
+  const f = path.join(authDir, "navegador.json");
+  try { const x = JSON.parse(fs.readFileSync(f, "utf8")); if (Array.isArray(x) && x.length === 3) return x; } catch { }
+  const nuevo = !fs.existsSync(path.join(authDir, "creds.json"));
+  const b = nuevo ? ["Windows", "Chrome", "10.0.22631"] : ["Ubuntu", "Chrome", "22.04.4"];
+  try { fs.mkdirSync(authDir, { recursive: true }); fs.writeFileSync(f, JSON.stringify(b)); } catch { }
+  return b;
+}
+/* ===== Aviso al propio vendedor (24/11) =====
+   Si su WhatsApp está desvinculado y tiene mensajes esperando, le llega una notificación en la app y un correo
+   (la base limita a 1 cada 6 h). Solo de 8:00 a 21:00 Lima. */
+const AVV = new Map();
+export async function avisarVendedor(sl, q, motivo, forzar) {
+  const L = limaHora(); if (!forzar && (L.h < 8 || L.h >= 21)) return null;
+  const t = AVV.get(sl.email) || 0; if (!forzar && Date.now() - t < 30 * 60000) return null;
+  AVV.set(sl.email, Date.now());
+  try {
+    const S = VCTX.supa;
+    const r = await fetch(S.url + "/functions/v1/aviso-vendedor", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ secret: S.secret, email: sl.email, cola: q, motivo: motivo || "" }) });
+    const j = await r.json(); if (j && j.notificacion) avisar("avv:" + sl.email, "📨 Le avisé a " + vgNom(sl.email) + " (app" + (j.correo === "ok" ? " y correo" : "") + ") que su WhatsApp está desconectado" + (q ? " con " + q + " pendientes" : "") + ".", 300, false);
+    return j;
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+}
+/* solo para pruebas automáticas (pruebas/*.test.mjs) */
+export function _probarCon(ctx) { VCTX = ctx; }

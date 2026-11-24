@@ -106,7 +106,7 @@ async function startWA(sl) {
     const { state, saveCreds } = await B.useMultiFileAuthState(sl.auth);
     let version; try { version = (await B.fetchLatestBaileysVersion()).version; } catch { }
     sl.st.state = "connecting";
-    const sock = sl.sock = makeWASocket({ auth: state, version, logger: pino({ level: "silent" }), printQRInTerminal: false, browser: !fs.existsSync(path.join(sl.auth, "creds.json")) && B.Browsers ? B.Browsers.windows("Chrome") : (B.Browsers ? B.Browsers.ubuntu("Chrome") : ["Ubuntu", "Chrome", "22.04.4"]), markOnlineOnConnect: false, syncFullHistory: true });
+    const sock = sl.sock = makeWASocket({ auth: state, version, logger: pino({ level: "silent" }), printQRInTerminal: false, browser: B.Browsers ? B.Browsers.ubuntu("Chrome") : ["Ubuntu", "Chrome", "22.04.4"] /* fijo: cambiarlo a mitad de la vinculación hace que WhatsApp la rechace */, markOnlineOnConnect: false, syncFullHistory: true });
     sock.ev.on("creds.update", async () => { await saveCreds(); persist(sl); });
     sock.ev.on("connection.update", async u => {
       if (gen !== sl.gen) return;
@@ -310,7 +310,7 @@ async function openTunnel() {
 }
 setInterval(publish, 60000);
 /* Presencia: cada 30 s avisa a Sigo qué vendedores tienen su WhatsApp conectado (el jefe lo ve en tiempo real). */
-setInterval(async () => { if (MOCK) return; const l = [...sellers.values()].map(sl => ({ email: sl.email, state: sl.st.state, me: sl.st.me || "" })); if (l.length) { try { await rpc("puente_presencia", { p_lista: l }); } catch { } } }, 30000);
+setInterval(async () => { if (MOCK) return; const l = [...sellers.values()].map(sl => { let esc = ""; try { const x = SX.escudoEstado(sl); esc = x.nivel ? (x.nivel === 2 ? "freno: " : "lento: ") + x.motivo : ""; } catch { } return { email: sl.email, state: sl.st.state, me: sl.st.me || "", err: sl.st.err || "", cola: sl.queue.length, cortes: (sl.DATA.cortes || []).slice(-6), escudo: esc, ver: SX.VERSION }; }); if (l.length) { try { await rpc("puente_presencia", { p_lista: l }); } catch { } } }, 30000);
 
 server.listen(PORT, HOST, () => {
   console.log("\n==============================================");

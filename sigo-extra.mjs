@@ -14,6 +14,7 @@ const DIR = path.dirname(fileURLToPath(import.meta.url));
 const STORE = process.env.DATA_DIR || DIR;
 const MDIR = path.join(STORE, "media"); fs.mkdirSync(MDIR, { recursive: true });
 const F_LID = path.join(STORE, "lids.json");
+export const VERSION = "2026-11-24a";
 const digits = s => String(s || "").replace(/\D/g, "");
 let LIDS = {}; try { LIDS = JSON.parse(fs.readFileSync(F_LID, "utf8")) || {}; } catch { }
 let tLid = null; const guardarLids = () => { clearTimeout(tLid); tLid = setTimeout(() => { try { fs.writeFileSync(F_LID, JSON.stringify(LIDS)); } catch { } }, 1500); };

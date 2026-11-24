@@ -84,3 +84,8 @@ test("puente.js: usa nombre fijo por sesión, reintenta el 401 y reporta diagnó
   for (const k of ["err:", "cola:", "cortes:", "escudo:", "ver: SX.VERSION"]) assert.ok(fuente.includes(k), "presencia sin " + k);
   assert.match(fuente, /destinoSeguro\(sl, sock, it\.to, masivo\)/);
 });
+
+test("puente.js: al arrancar carga a los desvinculados que tienen cola (para avisarles)", () => {
+  assert.match(fuente, /desvinculado pero con mensajes esperando/);
+  assert.match(fuente, /dt\.queue\.length\) \{ const sl = seller\(m\.email\); sl\.st\.state = "qr"/);
+});

@@ -106,7 +106,7 @@ async function startWA(sl) {
     const { state, saveCreds } = await B.useMultiFileAuthState(sl.auth);
     let version; try { version = (await B.fetchLatestBaileysVersion()).version; } catch { }
     sl.st.state = "connecting";
-    const sock = sl.sock = makeWASocket({ auth: state, version, logger: pino({ level: "silent" }), printQRInTerminal: false, browser: B.Browsers ? B.Browsers.ubuntu("Chrome") : ["Ubuntu", "Chrome", "22.04.4"], markOnlineOnConnect: false, syncFullHistory: true });
+    const sock = sl.sock = makeWASocket({ auth: state, version, logger: pino({ level: "silent" }), printQRInTerminal: false, browser: !fs.existsSync(path.join(sl.auth, "creds.json")) && B.Browsers ? B.Browsers.windows("Chrome") : (B.Browsers ? B.Browsers.ubuntu("Chrome") : ["Ubuntu", "Chrome", "22.04.4"]), markOnlineOnConnect: false, syncFullHistory: true });
     sock.ev.on("creds.update", async () => { await saveCreds(); persist(sl); });
     sock.ev.on("connection.update", async u => {
       if (gen !== sl.gen) return;
@@ -126,6 +126,7 @@ async function startWA(sl) {
     });
     SX.bandeja(sl, sock, B);
     SX.atencion(sl, sock);
+    SX.escudoEscuchar(sl, sock);
     SX.escucharLeidos(sl, sock, (num, ts) => { sl.DATA.replies.push({ seq: ++sl.DATA.rseq, from: num, read: true, text: "", ts }); saveData(sl); });
     sock.ev.on("messages.upsert", async ({ messages, type }) => {
       if (type !== "notify") return;
@@ -153,10 +154,10 @@ if (!MOCK) setInterval(() => { for (const sl of sellers.values()) { try {
 /* ----- Cola de envío con pausas (cuida cada número) ----- */
 /* foto o video de una difusión (se descarga una vez y se reutiliza) */
 const MEDIA_CACHE = new Map();
-async function mediaMsg(it) {
+async function mediaMsg(it, txt = it.text) {
   let buf = MEDIA_CACHE.get(it.media.url);
   if (!buf) { const r = await fetch(it.media.url); if (!r.ok) throw new Error("No se pudo bajar el archivo de la difusión"); buf = Buffer.from(await r.arrayBuffer()); if (MEDIA_CACHE.size > 5) MEDIA_CACHE.clear(); MEDIA_CACHE.set(it.media.url, buf); }
-  return /^video\//.test(it.media.mime) ? { video: buf, mimetype: it.media.mime, caption: it.text } : { image: buf, mimetype: it.media.mime, caption: it.text };
+  return /^video\//.test(it.media.mime) ? { video: buf, mimetype: it.media.mime, caption: txt } : { image: buf, mimetype: it.media.mime, caption: txt };
 }
 async function worker(sl) {
   if (sl.running) return; sl.running = true;
@@ -169,18 +170,20 @@ async function worker(sl) {
     if (DATA.sentToday >= capHoy) { st.err = "Se alcanzó el tope diario (" + capHoy + "). Continúa mañana."; await sleep(60000); continue; }
     st.err = "";
     if (sl.sinceBreak >= CFG.batch) { sl.breakUntil = Date.now() + CFG.pauseMin * 60000; log(sl.email, "descanso", CFG.pauseMin, "min"); await sleep(CFG.pauseMin * 60000); sl.sinceBreak = 0; sl.breakUntil = 0; continue; }
-    SX.priorizar(queue); const it = queue[0]; await sleep(SX.esManual(queue[0]) ? 1500 : rand(CFG.minDelay, CFG.maxDelay) * 1000);
+    SX.priorizar(queue); const it = queue[0], masivo = !SX.esManual(it), esc = masivo ? SX.escudoEstado(sl) : null;
+    if (esc && esc.frenoMs > 0) { sl.breakUntil = Date.now() + esc.frenoMs; st.err = "Escudo: pausa corta para cuidar el número (" + esc.motivo + ")."; await sleep(Math.min(esc.frenoMs, 30000)); continue; }
+    await sleep(masivo ? rand(CFG.minDelay, CFG.maxDelay) * 1000 * (esc ? esc.ritmo : 1) : 1500);
     if (queue[0] !== it) continue;
     let ok = false, err = "";
     try {
       const to = digits(it.to);
       if (MOCK) { ok = true; }
       else {
-        const sock = sl.sock, r = await SX.destino(sl, sock, it.to);
+        const sock = sl.sock, r = await SX.destinoSeguro(sl, sock, it.to, masivo), txt = masivo ? SX.variar(it.text) : it.text;
         if (!r || !r[0] || !r[0].exists) err = "Ese número no tiene WhatsApp.";
         else {
-          try { await sock.presenceSubscribe(r[0].jid); await sock.sendPresenceUpdate("composing", r[0].jid); await sleep(rand(1200, 3500) + it.text.length * 25); await sock.sendPresenceUpdate("paused", r[0].jid); } catch { }
-          const sent = await sock.sendMessage(r[0].jid, it.media ? await mediaMsg(it) : { text: it.text }); ok = true; try { (sl.mine = sl.mine || new Set()).add(sent.key.id); if (sl.mine.size > 2000) sl.mine.clear(); } catch { }
+          try { await sock.presenceSubscribe(r[0].jid); await sock.sendPresenceUpdate("composing", r[0].jid); await sleep(rand(1200, 3500) + Math.min(txt.length, 400) * 25); await sock.sendPresenceUpdate("paused", r[0].jid); } catch { }
+          const sent = await sock.sendMessage(r[0].jid, it.media ? await mediaMsg(it, txt) : { text: txt }); ok = true; if (masivo) SX.escudoEnviado(sl, sent.key.id); try { (sl.mine = sl.mine || new Set()).add(sent.key.id); if (sl.mine.size > 2000) sl.mine.clear(); } catch { }
         }
       }
     } catch (e) { err = String(e.message || e).slice(0, 120); }

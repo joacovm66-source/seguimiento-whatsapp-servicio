@@ -423,7 +423,7 @@ export function vgFoto() {
       descanso_hasta: sl.breakUntil > ahora ? hLima(sl.breakUntil) : "", en_cola: sl.queue.length, enviando_ahora: !!sl.running && sl.queue.length > 0,
       enviados_hoy_ok: R.length - malos.length, fallidos_hoy: malos.length, ultimo_envio: ult ? hLima(ult.ts) + (ult.ok ? " ok" : " falló") : "",
       ultimos_fallos: malos.slice(-5).map(r => hLima(r.ts) + " " + String(r.to || "").slice(-9) + ": " + (r.err || "?")),
-      contador_tope_hoy: sl.DATA.sentToday || 0, cortes_guardados: (sl.DATA.cortes || []).slice(-8), desvinculado_desde: sl.DATA.desvinculado || (sl.st.state === "qr" || /cerró la sesión/i.test(sl.st.err || "") ? "antes de que el puente guardara motivos (22/11)" : ""), tope_dia: Math.min(VCTX.cfg.dailyCap, (sl.acc && sl.acc.tope_dia) || Infinity) };
+      escudo: (() => { const x = escudoEstado(sl); return { nivel: ["normal", "cuidado (ritmo x2)", "freno"][x.nivel], motivo: x.motivo, llegan_pct: x.entrega, sin_whatsapp_pct: x.sin_whatsapp, cortes_30min: x.cortes_30min }; })(), contador_tope_hoy: sl.DATA.sentToday || 0, cortes_guardados: (sl.DATA.cortes || []).slice(-8), desvinculado_desde: sl.DATA.desvinculado || (sl.st.state === "qr" || /cerró la sesión/i.test(sl.st.err || "") ? "antes de que el puente guardara motivos (22/11)" : ""), tope_dia: Math.min(VCTX.cfg.dailyCap, (sl.acc && sl.acc.tope_dia) || Infinity) };
   });
   let memoria = ""; try { memoria = Math.round(os.freemem() / os.totalmem() * 100) + "% libre"; } catch { }
   return { hora_lima: String(L.h).padStart(2, "0") + ":" + String(L.m).padStart(2, "0"), fecha: L.dia, tunel: VCTX.publicUrl() ? "ok" : "caído", memoria_pc: memoria,
@@ -452,7 +452,7 @@ export function vgEstado() {
   const L = limaHora(), hoy = r => new Date(Date.parse(r.ts) - 5 * 3600000).toISOString().slice(0, 10) === L.dia;
   const est = { open: "✅ conectado", qr: "🔴 desvinculado (pide QR)", connecting: "🟡 conectando", off: "🔴 sin conexión" };
   const lineas = [...VCTX.sellers()].map(sl => { const R = sl.DATA.results.filter(hoy), ok = R.filter(r => r.ok).length, q = sl.queue.length;
-    return "• " + vgNom(sl.email) + ": " + (est[sl.st.state] || sl.st.state) + " · hoy " + ok + " enviados" + (R.length - ok ? ", " + (R.length - ok) + " fallidos" : "") + (q ? " · " + q + " en cola" : "") + (sl.paused ? " · PAUSADO" + (sl.pausa ? " (por " + sl.pausa.por + ", " + hLima(sl.pausa.ts) + ")" : "") : ""); });
+    return "• " + vgNom(sl.email) + ": " + (est[sl.st.state] || sl.st.state) + " · hoy " + ok + " enviados" + (R.length - ok ? ", " + (R.length - ok) + " fallidos" : "") + (q ? " · " + q + " en cola" : "") + (() => { const x = escudoEstado(sl); return x.nivel ? " · 🛡️ escudo " + (x.nivel === 2 ? "FRENO" : "lento") + " (" + x.motivo + ")" : ""; })() + (sl.paused ? " · PAUSADO" + (sl.pausa ? " (por " + sl.pausa.por + ", " + hLima(sl.pausa.ts) + ")" : "") : ""); });
   let mem = ""; try { mem = " · memoria libre " + Math.round(os.freemem() / os.totalmem() * 100) + "%"; } catch { }
   return "📊 Puente de Sigo (" + String(L.h).padStart(2, "0") + ":" + String(L.m).padStart(2, "0") + ")\n" + (lineas.join("\n") || "Sin vendedores conectados") + "\n" + (VCTX.publicUrl() ? "🌐 túnel ok" : "🔴 túnel caído") + mem;
 }
@@ -483,6 +483,8 @@ export function vigiaError(e) { VG.errores.push(Date.now()); VG.ultErr = String(
 const MOTIVO = { 401: "cerraron la sesión desde el teléfono o WhatsApp la expulsó", 403: "WhatsApp restringió el número", 408: "se cortó la conexión (internet)", 428: "WhatsApp cerró la conexión", 440: "la misma cuenta se abrió en otro lugar (otro puente o otro QR)", 500: "sesión dañada", 515: "reinicio normal tras vincular" };
 export const vgMotivo = c => c ? (MOTIVO[c] || "código " + c) + " [" + c + "]" : "";
 export function vigiaCierre(sl, code) {
+  escudoCorte(sl, code);
+  if (code === 401) avisar("d401:" + sl.email, "🔴 WhatsApp DESVINCULÓ a " + vgNom(sl.email) + " [401]. " + escudoResumen(sl) + (sl.queue.length ? " Quedan " + sl.queue.length + " en cola (no se pierden)." : "") + " Debe escanear el QR otra vez.", 30);
   const v = vgS(sl); v.cierres.push(Date.now()); v.ultCod = code; v.motivos = (v.motivos || []).concat(vgMotivo(code) + " " + hLima(Date.now())).slice(-5); sl.motivosCierre = v.motivos;
   try { /* se guarda en datos.json: el motivo no se pierde aunque el puente se reinicie */
     const L = limaHora(); sl.DATA.cortes = (sl.DATA.cortes || []).concat({ fecha: L.dia, hora: hLima(Date.now()), codigo: code || 0, motivo: vgMotivo(code) || "sin código" }).slice(-15);
@@ -554,4 +556,74 @@ export function vigia(ctx) {
   setInterval(() => { vgChat(); }, 20000);
   setTimeout(() => avisar("inicio", "🟢 El puente de Sigo se inició" + (VG.tok ? "" : " (Telegram aún sin configurar)") + ". Si no esperabas esto, la PC o el puente se reiniciaron.", 10), 90000);
   setInterval(() => { try { revisar(); } catch (e) { ctx.log("Vigía:", e.message); } }, 60000);
+}
+
+/* ===== Escudo de reputación (23/11) =====
+   Cuida que WhatsApp no bote la sesión (401) ni restrinja el número (403) SIN bajar el tope diario.
+   Mira en vivo 3 señales que WhatsApp usa para detectar spam y ajusta solo el ritmo:
+   1) números sin WhatsApp (no se les envía), 2) mensajes que no llegan (1 check), 3) cortes seguidos.
+   Nivel 0 normal · 1 cuidado (ritmo x2) · 2 freno (pausa 20 min y luego ritmo x2). Vuelve solo a 0. */
+const ESC = new Map();
+export function escudo(sl) {
+  let e = ESC.get(sl.email);
+  if (!e) { e = { checks: [], env: new Map(), cortes: [], nivel: 0, frenoHasta: 0, motivo: "", desde: 0 }; ESC.set(sl.email, e); }
+  return e;
+}
+/* ¿El número existe? Para difusiones no se envía a números que WhatsApp dice que no existen
+   (enviar a números sin WhatsApp es de las señales de spam más fuertes).
+   Si WhatsApp falla al responder, o si dice "no existe" a casi todos (falla de WhatsApp con LID), se envía igual. */
+export async function destinoSeguro(sl, sock, to, masivo) {
+  const raw = String(to || ""); if (!masivo || raw.includes("@")) return destino(sl, sock, to);
+  const d = digits(raw); if (LIDS[d]) return [{ exists: true, jid: LIDS[d] }];
+  const e = escudo(sl); let r = null, fallo = false;
+  try { r = await sock.onWhatsApp(d + "@s.whatsapp.net"); } catch { fallo = true; }
+  const existe = !!(r && r[0] && r[0].exists);
+  if (!fallo) { e.checks.push({ t: Date.now(), ok: existe }); if (e.checks.length > 40) e.checks.shift(); }
+  if (existe) return r;
+  if (fallo) return d.length >= 10 ? [{ exists: true, jid: d + "@s.whatsapp.net" }] : [];
+  const ult = e.checks.slice(-20), malos = ult.filter(c => !c.ok).length;
+  if (ult.length >= 15 && malos / ult.length > 0.8) return d.length >= 10 ? [{ exists: true, jid: d + "@s.whatsapp.net" }] : []; /* WhatsApp está fallando, no la lista */
+  return [];
+}
+/* Variación: cada cliente recibe un texto distinto (WhatsApp detecta el mismo texto repetido a muchos).
+   - {opción a|opción b|opción c}: el vendedor puede escribir variantes y se elige una al azar.
+   - El saludo inicial cambia solo (¡Hola / Hola / ¡Qué tal / ¡Buenas).
+   - Detalles invisibles para el cliente: espacios y saltos de línea al final de algunas líneas. */
+const SALUDOS = ["¡Hola", "Hola", "¡Qué tal", "¡Buenas", "¡Hola"];
+const pick = a => a[Math.floor(Math.random() * a.length)];
+export function variar(t) {
+  t = String(t || ""); if (!t) return t;
+  for (let i = 0; i < 5 && /\{[^{}]*\|[^{}]*\}/.test(t); i++) t = t.replace(/\{([^{}]*\|[^{}]*)\}/g, (_, o) => pick(o.split("|")));
+  t = t.replace(/^([^\p{L}¡]*)¡?Hola\b/u, (_, pre) => pre + pick(SALUDOS));
+  const lineas = t.split("\n");
+  if (lineas.length > 2) { const n = 1 + Math.floor(Math.random() * Math.min(3, lineas.length - 1)); for (let k = 0; k < n; k++) { const i = Math.floor(Math.random() * (lineas.length - 1)); if (lineas[i].trim()) lineas[i] = lineas[i].replace(/\s*$/, " "); } t = lineas.join("\n"); }
+  return t;
+}
+/* Registro de envíos de difusión y de su entrega (checks) */
+export function escudoEnviado(sl, id) { const e = escudo(sl); e.env.set(id, { t: Date.now(), ok: false }); if (e.env.size > 120) e.env.delete(e.env.keys().next().value); }
+export function escudoEscuchar(sl, sock) {
+  sock.ev.on("messages.update", (lista) => { const e = escudo(sl); for (const u of lista || []) { const k = u.key || {}; if (!k.fromMe || !u.update || u.update.status == null) continue; const x = e.env.get(k.id); if (x && u.update.status >= 3) x.ok = true; } });
+}
+export function escudoCorte(sl, code) { if (code === 515) return; const e = escudo(sl); e.cortes.push(Date.now()); e.cortes = e.cortes.filter(t => Date.now() - t < 30 * 60000); }
+/* Estado del escudo: calcula el nivel y devuelve el multiplicador del ritmo y si hay que frenar */
+export function escudoEstado(sl) {
+  const e = escudo(sl), ahora = Date.now();
+  const ult = e.checks.filter(c => ahora - c.t < 60 * 60000).slice(-20), noEx = ult.length >= 8 ? ult.filter(c => !c.ok).length / ult.length : 0;
+  const viejos = [...e.env.values()].filter(x => ahora - x.t > 10 * 60000 && ahora - x.t < 3 * 3600000).slice(-30), entrega = viejos.length >= 10 ? viejos.filter(x => x.ok).length / viejos.length : 1;
+  const cortes = e.cortes.filter(t => ahora - t < 30 * 60000).length;
+  let nivel = 0, motivo = "";
+  if (entrega < 0.4 || noEx > 0.5 || cortes >= 4) { nivel = 2; motivo = entrega < 0.4 ? "solo llegan " + Math.round(entrega * 100) + "% de los mensajes" : noEx > 0.5 ? Math.round(noEx * 100) + "% de los números no tienen WhatsApp" : cortes + " cortes en 30 min"; }
+  else if (entrega < 0.7 || noEx > 0.25 || cortes >= 2) { nivel = 1; motivo = entrega < 0.7 ? "llegan " + Math.round(entrega * 100) + "% de los mensajes" : noEx > 0.25 ? Math.round(noEx * 100) + "% de números sin WhatsApp" : cortes + " cortes en 30 min"; }
+  const n = vgNom(sl.email);
+  if (nivel === 2 && e.nivel < 2) { e.frenoHasta = ahora + 20 * 60000; avisar("esc2:" + sl.email, "🔴 Escudo: frené 20 min los envíos de " + n + " porque " + motivo + ". WhatsApp podría desvincularlo. Luego sigue solo, más lento. Revisa que su lista tenga números correctos.", 60); }
+  else if (nivel === 1 && e.nivel === 0) avisar("esc1:" + sl.email, "🟡 Escudo: " + n + " envía más lento por ahora (" + motivo + ").", 60);
+  else if (nivel === 0 && e.nivel > 0) avisar("esc0:" + sl.email, "✅ Escudo: " + n + " volvió al ritmo normal.", 30);
+  if (nivel !== e.nivel) { e.nivel = nivel; e.motivo = motivo; e.desde = ahora; }
+  return { nivel, motivo, ritmo: nivel ? 2 : 1, frenoMs: Math.max(0, e.frenoHasta - ahora), entrega: Math.round(entrega * 100), sin_whatsapp: Math.round(noEx * 100), cortes_30min: cortes };
+}
+/* Resumen para el aviso de desvinculado: qué pasaba justo antes del corte */
+export function escudoResumen(sl) {
+  const ahora = Date.now(), R = sl.DATA.results || [], hora = R.filter(r => r.ok && ahora - Date.parse(r.ts) < 60 * 60000).length;
+  const s = escudoEstado(sl);
+  return "Antes del corte: " + hora + " enviados en la última hora, llegaban " + s.entrega + "%, " + s.sin_whatsapp + "% de números sin WhatsApp." + (hora >= 40 ? " Lo más probable: WhatsApp sospechó spam por la difusión." : hora === 0 ? " No estaba enviando: probablemente lo cerraron desde el teléfono o se pasó de 4 dispositivos." : "");
 }

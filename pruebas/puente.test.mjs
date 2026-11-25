@@ -181,7 +181,7 @@ test("calentamiento: si se desvinculó hace poco, baja el techo a la mitad", () 
 });
 test("worker aplica el techo de calentamiento solo a números nuevos", () => {
   assert.match(fuente, /cal\.nuevo && DATA\.sentToday >= cal\.techo/);
-  assert.match(fuente, /Se están enviando todos tus mensajes/);
+  assert.match(fuente, /SX\.fraseCalentando\(\)/);
 });
 
 /* ===== 25/11g: registro de desvinculaciones ===== */
@@ -197,4 +197,12 @@ test("avisarVendedor: no repite el aviso en la misma caída (avisoEpisodio)", ()
   const src = fs.readFileSync(new URL("../sigo-extra.mjs", import.meta.url), "utf8");
   assert.match(src, /sl\.DATA\.avisoEpisodio && !forzar\) return null/);
   assert.match(fuente, /sl\.DATA\.avisoEpisodio = false/);   // se reinicia al reconectar
+});
+
+/* ===== 25/11i: frases motivadoras del calentamiento ===== */
+test("fraseCalentando: devuelve una frase corta, motivadora y sin tope/número", () => {
+  const f = SX.fraseCalentando();
+  assert.ok(typeof f === "string" && f.length > 10 && f.length < 160);
+  assert.ok(!/\d{2,}/.test(f), "no debe mostrar números de tope");
+  assert.ok(/tus mensajes|todo|enviando|salir|saliendo/i.test(f));
 });

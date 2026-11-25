@@ -14,7 +14,7 @@ const DIR = path.dirname(fileURLToPath(import.meta.url));
 const STORE = process.env.DATA_DIR || DIR;
 const MDIR = path.join(STORE, "media"); fs.mkdirSync(MDIR, { recursive: true });
 const F_LID = path.join(STORE, "lids.json");
-export const VERSION = "2026-11-25h";
+export const VERSION = "2026-11-25i";
 const digits = s => String(s || "").replace(/\D/g, "");
 let LIDS = {}; try { LIDS = JSON.parse(fs.readFileSync(F_LID, "utf8")) || {}; } catch { }
 let tLid = null; const guardarLids = () => { clearTimeout(tLid); tLid = setTimeout(() => { try { fs.writeFileSync(F_LID, JSON.stringify(LIDS)); } catch { } }, 1500); };
@@ -689,6 +689,18 @@ export function escudoEstado(sl) {
 const CALENTAR = [[0, 40], [2, 120], [4, 220], [8, 400], [12, 600], [18, 850], [24, 1200], [36, 1800], [48, Infinity]];
 export function horasVinculado(sl) { return sl.DATA && sl.DATA.vinculadoTs ? (Date.now() - sl.DATA.vinculadoTs) / 3600000 : 1e9; }
 export function diasVinculado(sl) { return Math.floor(horasVinculado(sl) / 24); }
+/* Mensajes cortos y motivadores para el vendedor mientras se calienta su número nuevo.
+   No dice tope ni número: solo que todos salen y que tenga paciencia. Rotan solos (toque del campo). */
+const FRASES_CAL = [
+  "✅ Se están enviando todos tus mensajes. Esto tardará un poco. ☕ Tómate un café mientras tanto.",
+  "✅ Todos tus mensajes van a salir, con calma. 🌱 Las buenas cosechas toman su tiempo.",
+  "✅ Enviando todo, sin apuro. 🌾 Siembra hoy, cosecha mañana.",
+  "✅ Tus mensajes están saliendo solos. Relájate, Sigo se encarga. 🌻",
+  "✅ Todo en camino. 💪 Paso a paso se llega lejos.",
+  "✅ Se están enviando todos. Tómate un respiro, ya hiciste tu parte. 🌿",
+  "✅ Vamos con todo, solo un poco más despacio hoy. 🚜 Lo bueno se hace con paciencia."
+];
+export function fraseCalentando() { return FRASES_CAL[Math.floor(Date.now() / (10 * 60000)) % FRASES_CAL.length]; }
 const CALAV = new Map();
 export function calAviso(sl, cal) {
   const hoy = limaHora().dia, k = sl.email + hoy; if (CALAV.get(k)) return; CALAV.set(k, 1);

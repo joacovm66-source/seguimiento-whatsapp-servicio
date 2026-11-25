@@ -14,7 +14,7 @@ const DIR = path.dirname(fileURLToPath(import.meta.url));
 const STORE = process.env.DATA_DIR || DIR;
 const MDIR = path.join(STORE, "media"); fs.mkdirSync(MDIR, { recursive: true });
 const F_LID = path.join(STORE, "lids.json");
-export const VERSION = "2026-11-24c";
+export const VERSION = "2026-11-25a";
 const digits = s => String(s || "").replace(/\D/g, "");
 let LIDS = {}; try { LIDS = JSON.parse(fs.readFileSync(F_LID, "utf8")) || {}; } catch { }
 let tLid = null; const guardarLids = () => { clearTimeout(tLid); tLid = setTimeout(() => { try { fs.writeFileSync(F_LID, JSON.stringify(LIDS)); } catch { } }, 1500); };
@@ -655,6 +655,33 @@ export async function avisarVendedor(sl, q, motivo, forzar) {
     const j = await r.json(); if (j && j.notificacion) avisar("avv:" + sl.email, "📨 Le avisé a " + vgNom(sl.email) + " (app" + (j.correo === "ok" ? " y correo" : "") + ") que su WhatsApp está desconectado" + (q ? " con " + q + " pendientes" : "") + ".", 300, false);
     return j;
   } catch (e) { return { ok: false, error: String(e.message || e) }; }
+}
+/* ===== Sesión blindada (25/11) =====
+   Si Windows se apaga, se suspende o se corta la luz justo cuando Baileys escribe creds.json, el archivo queda dañado
+   y WhatsApp pide QR otra vez (parece una desvinculación, pero el teléfono sigue vinculado). Por eso:
+   - cada vez que las credenciales cambian y están sanas, se copian a creds.respaldo.json (escritura atómica)
+   - si creds.json falta o está dañado, se restaura del respaldo antes de conectar
+   - una expulsión real (401 confirmado) no borra la carpeta: la archiva (se guardan las 2 últimas) para poder revisar */
+export function credsValidas(f) { try { const c = JSON.parse(fs.readFileSync(f, "utf8")); return c && c.me && c.me.id && c.noiseKey ? c : null; } catch { return null; } }
+export function credsRespaldar(authDir) {
+  const f = path.join(authDir, "creds.json"), b = path.join(authDir, "creds.respaldo.json");
+  if (!credsValidas(f)) return false;
+  try { fs.copyFileSync(f, b + ".tmp"); if (!credsValidas(b + ".tmp")) return false; fs.renameSync(b + ".tmp", b); return true; } catch { return false; }
+}
+export function credsRestaurar(authDir, forzar) {
+  const f = path.join(authDir, "creds.json"), b = path.join(authDir, "creds.respaldo.json");
+  if (!forzar && credsValidas(f)) return false;
+  if (!credsValidas(b)) return false;
+  try { if (fs.existsSync(f) && !credsValidas(f)) fs.copyFileSync(f, f + ".danado"); fs.copyFileSync(b, f + ".tmp"); fs.renameSync(f + ".tmp", f); return true; } catch { return false; }
+}
+export function sesionArchivar(authDir) {
+  try {
+    if (!fs.existsSync(authDir)) return;
+    fs.renameSync(authDir, authDir + "_baja_" + Date.now());
+    const dir = path.dirname(authDir), base = path.basename(authDir) + "_baja_";
+    const viejas = fs.readdirSync(dir).filter(n => n.startsWith(base)).sort().slice(0, -2);
+    for (const n of viejas) fs.rmSync(path.join(dir, n), { recursive: true, force: true });
+  } catch { try { fs.rmSync(authDir, { recursive: true, force: true }); } catch { } }
 }
 /* solo para pruebas automáticas (pruebas/*.test.mjs) */
 export function _probarCon(ctx) { VCTX = ctx; }

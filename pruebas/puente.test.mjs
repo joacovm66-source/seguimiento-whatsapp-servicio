@@ -89,3 +89,36 @@ test("puente.js: al arrancar carga a los desvinculados que tienen cola (para avi
   assert.match(fuente, /desvinculado pero con mensajes esperando/);
   assert.match(fuente, /dt\.queue\.length\) \{ const sl = seller\(m\.email\); sl\.st\.state = "qr"/);
 });
+
+/* ===== 25/11: sesión blindada ===== */
+const credsOk = JSON.stringify({ noiseKey: { a: 1 }, me: { id: "51999888777:3@s.whatsapp.net" }, registered: true });
+test("credenciales: respaldo y restauración si creds.json se daña (corte de luz)", () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "ses-")), f = path.join(d, "creds.json");
+  fs.writeFileSync(f, credsOk); assert.ok(SX.credsRespaldar(d));
+  fs.writeFileSync(f, '{"noiseKey":{"a":1},"me":{"id":"519'); // escritura cortada a la mitad
+  assert.ok(SX.credsRestaurar(d)); assert.equal(SX.credsValidas(f).me.id, "51999888777:3@s.whatsapp.net");
+  assert.ok(fs.existsSync(f + ".danado"), "no guardó el archivo dañado para revisar");
+  fs.rmSync(f); assert.ok(SX.credsRestaurar(d), "no restauró cuando creds.json desapareció");
+  assert.equal(SX.credsRestaurar(d), false, "restauró sin necesidad");
+});
+test("credenciales: nunca respalda unas credenciales sin vincular (QR nuevo)", () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "ses-")), f = path.join(d, "creds.json");
+  fs.writeFileSync(f, credsOk); SX.credsRespaldar(d);
+  fs.writeFileSync(f, JSON.stringify({ noiseKey: { a: 2 }, registered: false })); // Baileys generó credenciales nuevas
+  assert.equal(SX.credsRespaldar(d), false);
+  assert.equal(SX.credsValidas(path.join(d, "creds.respaldo.json")).me.id, "51999888777:3@s.whatsapp.net");
+});
+test("401 real: archiva la sesión (no la borra) y guarda solo las 2 últimas", () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "vend-")), a = path.join(base, "sesion");
+  for (let i = 0; i < 4; i++) { fs.mkdirSync(a, { recursive: true }); fs.writeFileSync(path.join(a, "creds.json"), credsOk); SX.sesionArchivar(a); }
+  assert.ok(!fs.existsSync(a)); assert.equal(fs.readdirSync(base).filter(n => n.startsWith("sesion_baja_")).length, 2);
+  assert.equal(SX.credsRestaurar(a), false, "no debe revivir una sesión expulsada");
+});
+test("puente: QR vencido no cuenta como corte, 401 tras 515 no es expulsión, llaves en caché", () => {
+  assert.match(fuente, /const eraQR = sl\.qrVisto && code !== 515/);
+  assert.ok(fuente.indexOf("if (eraQR)") < fuente.indexOf("SX.vigiaCierre(sl, code)"), "el QR vencido llega al escudo");
+  assert.match(fuente, /sl\.t515 && Date\.now\(\) - sl\.t515 < 90000/);
+  assert.match(fuente, /makeCacheableSignalKeyStore/);
+  assert.match(fuente, /SX\.sesionArchivar\(sl\.auth\)/);
+  assert.ok(!/loggedOut\) \{ sl\.r401 = 0; try \{ fs\.rmSync/.test(fuente));
+});

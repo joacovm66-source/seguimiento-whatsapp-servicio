@@ -103,22 +103,37 @@ async function startWA(sl) {
   try {
     const B = await import("@whiskeysockets/baileys");
     const makeWASocket = B.default || B.makeWASocket;
+    if (SX.credsRestaurar(sl.auth)) log(sl.email, "credenciales dañadas: restauradas del respaldo (no hace falta QR)");
     const { state, saveCreds } = await B.useMultiFileAuthState(sl.auth);
     let version; try { version = (await B.fetchLatestBaileysVersion()).version; } catch { }
     sl.st.state = "connecting";
-    const sock = sl.sock = makeWASocket({ auth: state, version, logger: pino({ level: "silent" }), printQRInTerminal: false, browser: SX.navegador(sl.auth) /* fijo por sesión: nunca cambia a mitad de una vinculación */, markOnlineOnConnect: false, syncFullHistory: true });
-    sock.ev.on("creds.update", async () => { await saveCreds(); persist(sl); });
+    const sock = sl.sock = makeWASocket({ auth: { creds: state.creds, keys: B.makeCacheableSignalKeyStore ? B.makeCacheableSignalKeyStore(state.keys, pino({ level: "silent" })) : state.keys }, version, logger: pino({ level: "silent" }), printQRInTerminal: false, browser: SX.navegador(sl.auth) /* fijo por sesión: nunca cambia a mitad de una vinculación */, markOnlineOnConnect: false, syncFullHistory: true });
+    sock.ev.on("creds.update", async () => { await saveCreds(); SX.credsRespaldar(sl.auth); persist(sl); });
     sock.ev.on("connection.update", async u => {
       if (gen !== sl.gen) return;
-      if (u.qr) { sl.st.state = "qr"; sl.st.qr = await QRCode.toDataURL(u.qr, { margin: 2, scale: 6, errorCorrectionLevel: "M" }); log(sl.email, "espera que escaneen el QR"); }
-      if (u.connection === "open") { sl.retry = 0; sl.DATA.desvinculado = null; sl.st.state = "open"; sl.st.qr = null; sl.st.err = ""; sl.st.me = digits((sock.user && sock.user.id || "").split(":")[0].split("@")[0]); log(sl.email, "WhatsApp conectado:", sl.st.me); if (sl.queue.length) worker(sl); }
+      if (u.qr && SX.credsValidas(path.join(sl.auth, "creds.respaldo.json")) && (!sl.rq || Date.now() - sl.rq > 10 * 60000)) {
+        /* Capa 2 (25/11): pidió QR pero este vendedor YA estaba vinculado → las credenciales se dañaron en la PC. Se restauran y se reconecta sin QR. */
+        sl.rq = Date.now(); sl.gen++; sl.started = false; try { sock.end(undefined); } catch { } log(sl.email, "pidió QR estando vinculado: restauro credenciales y reintento");
+        setTimeout(() => { SX.credsRestaurar(sl.auth, true); startWA(sl); }, 3000); return; }
+      if (u.qr) { sl.qrVisto = true; sl.st.state = "qr"; sl.st.qr = await QRCode.toDataURL(u.qr, { margin: 2, scale: 6, errorCorrectionLevel: "M" }); log(sl.email, "espera que escaneen el QR"); }
+      if (u.connection === "open") { sl.retry = 0; sl.r500 = 0; sl.qrRondas = 0; sl.qrVisto = false; SX.credsRespaldar(sl.auth); sl.DATA.desvinculado = null; sl.st.state = "open"; sl.st.qr = null; sl.st.err = ""; sl.st.me = digits((sock.user && sock.user.id || "").split(":")[0].split("@")[0]); log(sl.email, "WhatsApp conectado:", sl.st.me); if (sl.queue.length) worker(sl); }
       if (u.connection === "close") {
         const code = u.lastDisconnect && u.lastDisconnect.error && u.lastDisconnect.error.output && u.lastDisconnect.error.output.statusCode;
         log(sl.email, "conexión cerrada, código", code, String(u.lastDisconnect && u.lastDisconnect.error && u.lastDisconnect.error.message || "").slice(0, 120));
-        sl.st.state = "off"; sl.st.qr = null; sl.st.me = ""; sl.started = false; SX.vigiaCierre(sl, code);
+        const eraQR = sl.qrVisto && code !== 515; sl.qrVisto = false;
+        if (code === 515) sl.t515 = Date.now();
+        if (eraQR) { /* Capa 3 (25/11): el QR venció sin que lo escaneen. NO es un corte (no frena el escudo ni ensucia el diagnóstico) y no se queda generando QR para siempre. */
+          sl.started = false; sl.st.qr = null; sl.st.state = "qr"; sl.qrRondas = (sl.qrRondas || 0) + 1;
+          if (sl.qrRondas < 3) setTimeout(() => startWA(sl), 3000); else { sl.st.err = "WhatsApp desvinculado: hay que escanear el QR."; log(sl.email, "QR sin escanear: espero a que abran Sigo"); }
+          return; }
+        sl.st.state = "off"; sl.st.qr = null; sl.st.me = ""; sl.started = false;
+        /* Capa 4 (25/11): un 401 que llega justo después de un 515 (reinicio normal) es limpieza de WhatsApp multi-dispositivo, no una expulsión. */
+        if (code === B.DisconnectReason.loggedOut && sl.t515 && Date.now() - sl.t515 < 90000) { log(sl.email, "401 tras 515: no es expulsión, reconecto"); sl.st.err = "Reconectando…"; setTimeout(() => startWA(sl), 5000); return; }
+        SX.vigiaCierre(sl, code);
         if (code === 403) { sl.st.err = "WhatsApp restringió este número. No envíe más por ahora y revise el teléfono."; log(sl.email, "NÚMERO RESTRINGIDO por WhatsApp"); sl.paused = true; sl.pausa = { por: "WhatsApp restringió el número (código 403)", ts: Date.now() }; return; }
         if (code === B.DisconnectReason.loggedOut && (!sl.r401 || Date.now() - sl.r401 > 10 * 60000)) { sl.r401 = Date.now(); log(sl.email, "401: reintento una vez antes de pedir QR"); sl.st.err = "Reconectando…"; setTimeout(() => startWA(sl), 20000); }
-        else if (code === B.DisconnectReason.loggedOut) { sl.r401 = 0; try { fs.rmSync(sl.auth, { recursive: true, force: true }); } catch { } log(sl.email, "sesión cerrada desde el teléfono"); sl.st.err = "Se cerró la sesión desde el teléfono. Escanee otra vez."; }
+        else if (code === B.DisconnectReason.loggedOut) { sl.r401 = 0; SX.sesionArchivar(sl.auth); log(sl.email, "sesión cerrada desde el teléfono"); sl.st.err = "Se cerró la sesión desde el teléfono. Escanee otra vez."; }
+        else if (code === 500 && !sl.r500) { sl.r500 = Date.now(); SX.credsRestaurar(sl.auth, true); log(sl.email, "sesión dañada (500): restauro credenciales del respaldo"); sl.st.err = "Reconectando…"; setTimeout(() => startWA(sl), 5000); }
         else if (code === 440) { sl.st.err = "Esta cuenta se abrió en otro puente u otra PC. Reintento en 2 min."; log(sl.email, "conflicto 440: otra sesión abierta"); setTimeout(() => startWA(sl), 120000); }
         else { /* internet u otro corte: reintenta solo, cada vez con más espera (3 s → 1 min) para no saturar a WhatsApp */
           sl.retry = (sl.retry || 0) + 1; const ms = Math.min(60000, 3000 * Math.pow(2, Math.min(sl.retry - 1, 5)));
@@ -149,7 +164,7 @@ async function startWA(sl) {
 if (!MOCK) setInterval(() => { for (const sl of sellers.values()) { try {
   if (sl.started || sl.st.state === "open" || sl.st.state === "qr") continue;
   if (/cerró la sesión|restringió|otro puente/i.test(sl.st.err || "")) continue;
-  if (fs.existsSync(path.join(sl.auth, "creds.json"))) { log(sl.email, "guardián: reconectando"); startWA(sl); }
+  SX.credsRestaurar(sl.auth); if (fs.existsSync(path.join(sl.auth, "creds.json"))) { log(sl.email, "guardián: reconectando"); startWA(sl); }
 } catch { } } }, 90000);
 
 /* ----- Cola de envío con pausas (cuida cada número) ----- */
@@ -325,7 +340,7 @@ server.listen(PORT, HOST, () => {
   openTunnel(); publish();
   if (!MOCK) SX.vigia({ supa: { url: CFG.supabaseUrl, key: CFG.supabaseKey, secret: CFG.secret }, sellers: () => sellers.values(), cfg: CFG, publicUrl: () => publicUrl, restantes, log, worker: sl => worker(sl) });
   if (!MOCK) SX.autoActualizar(() => [...sellers.values()].some(x => x.running && x.queue.length && x.st.state === "open" && !x.paused), (...a) => log(...a));
-  (async () => { await restoreAll(); if (!MOCK) for (const d of fs.readdirSync(VEND)) { try { if (fs.existsSync(path.join(VEND, d, "sesion", "creds.json"))) { const m = readJson(path.join(VEND, d, "email.json"), null); if (m && m.email) startWA(seller(m.email)); } else { /* desvinculado pero con mensajes esperando: se carga igual para que el Vigía lo vea y le avise al vendedor */ const m = readJson(path.join(VEND, d, "email.json"), null), dt = readJson(path.join(VEND, d, "datos.json"), {}); if (m && m.email && Array.isArray(dt.queue) && dt.queue.length) { const sl = seller(m.email); sl.st.state = "qr"; sl.st.err = "WhatsApp desvinculado: hay que escanear el QR."; log(m.email, "desvinculado con", sl.queue.length, "en cola"); } } } catch { } } })();
+  (async () => { await restoreAll(); if (!MOCK) for (const d of fs.readdirSync(VEND)) { try { SX.credsRestaurar(path.join(VEND, d, "sesion")); if (fs.existsSync(path.join(VEND, d, "sesion", "creds.json"))) { const m = readJson(path.join(VEND, d, "email.json"), null); if (m && m.email) startWA(seller(m.email)); } else { /* desvinculado pero con mensajes esperando: se carga igual para que el Vigía lo vea y le avise al vendedor */ const m = readJson(path.join(VEND, d, "email.json"), null), dt = readJson(path.join(VEND, d, "datos.json"), {}); if (m && m.email && Array.isArray(dt.queue) && dt.queue.length) { const sl = seller(m.email); sl.st.state = "qr"; sl.st.err = "WhatsApp desvinculado: hay que escanear el QR."; log(m.email, "desvinculado con", sl.queue.length, "en cola"); } } } catch { } } })();
 });
 /* recordar el correo de cada carpeta para reconectar al reiniciar */
 setInterval(() => { for (const sl of sellers.values()) { try { fs.writeFileSync(path.join(sl.dir, "email.json"), JSON.stringify({ email: sl.email })); sl.DATA.queue = sl.queue.slice(0, 5000); fs.writeFileSync(sl.fdata, JSON.stringify(sl.DATA)); } catch { } } }, 5000);

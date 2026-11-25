@@ -155,3 +155,11 @@ test("avisarVendedor: manda WhatsApp al número propio desde la línea de Sigo (
   assert.match(src, /mi && mi !== VG\.wa/);                 // no se auto-avisa
   assert.match(src, /tu WhatsApp se desconectó de Sigo/);   // el texto que ve el vendedor
 });
+
+/* ===== 25/11e: mensaje de difusión reanudada ===== */
+test("al reconectar, si se avisó la caída, se manda la reanudación al WhatsApp del vendedor", () => {
+  const src = fs.readFileSync(new URL("../sigo-extra.mjs", import.meta.url), "utf8");
+  assert.match(src, /avisadoCaida = true/);                       // se marca al avisar la caída
+  assert.match(src, /tu difusión se reanudó sola/);                // el mensaje bonito
+  assert.ok(src.indexOf("avisadoCaida = false") < src.indexOf("tu difusión se reanudó"), "no se limpia la marca antes de avisar");
+});

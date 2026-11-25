@@ -181,15 +181,14 @@ async function worker(sl) {
   while (queue.length) {
     if (sl.paused || st.state !== "open") { await sleep(3000); continue; }
     if (DATA.day !== today()) { DATA.day = today(); DATA.sentToday = 0; }
-    const abs = SX.escudoABS(sl); const capHoy = Math.min(CFG.dailyCap, (sl.acc && sl.acc.tope_dia) || Infinity, abs.tope);
-    if (DATA.sentToday >= abs.tope && DATA.sentToday < capHoy) { st.err = "Freno ABS: hoy ya salieron " + DATA.sentToday + " desde este número (salud " + abs.salud + "/100" + (abs.motivo ? ": " + abs.motivo : "") + "). Sigue mañana para cuidarlo."; SX.absAviso(sl, abs); await sleep(60000); continue; }
+    const capHoy = Math.min(CFG.dailyCap, (sl.acc && sl.acc.tope_dia) || Infinity);
     if (restantes(sl.acc) <= 0) { st.err = "Se acabaron los envíos de su plan."; queue.length = 0; break; }
     if (DATA.sentToday >= capHoy) { st.err = "Se alcanzó el tope diario (" + capHoy + "). Continúa mañana."; await sleep(60000); continue; }
     st.err = "";
     if (sl.sinceBreak >= CFG.batch) { sl.breakUntil = Date.now() + CFG.pauseMin * 60000; log(sl.email, "descanso", CFG.pauseMin, "min"); await sleep(CFG.pauseMin * 60000); sl.sinceBreak = 0; sl.breakUntil = 0; continue; }
     SX.priorizar(queue); const it = queue[0], masivo = !SX.esManual(it), esc = masivo ? SX.escudoEstado(sl) : null;
     if (esc && esc.frenoMs > 0) { sl.breakUntil = Date.now() + esc.frenoMs; st.err = "Escudo: pausa corta para cuidar el número (" + esc.motivo + ")."; await sleep(Math.min(esc.frenoMs, 30000)); continue; }
-    await sleep(masivo ? rand(CFG.minDelay, CFG.maxDelay) * 1000 * (esc ? esc.ritmo : 1) : 1500);
+    await sleep(masivo ? rand(CFG.minDelay, CFG.maxDelay) * 1000 * (esc ? esc.ritmo : 1) * SX.escudoABS(sl).ritmo : 1500);
     if (queue[0] !== it) continue;
     let ok = false, err = "";
     try {

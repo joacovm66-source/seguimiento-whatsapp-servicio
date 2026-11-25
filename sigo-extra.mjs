@@ -14,7 +14,7 @@ const DIR = path.dirname(fileURLToPath(import.meta.url));
 const STORE = process.env.DATA_DIR || DIR;
 const MDIR = path.join(STORE, "media"); fs.mkdirSync(MDIR, { recursive: true });
 const F_LID = path.join(STORE, "lids.json");
-export const VERSION = "2026-11-25b";
+export const VERSION = "2026-11-25c";
 const digits = s => String(s || "").replace(/\D/g, "");
 let LIDS = {}; try { LIDS = JSON.parse(fs.readFileSync(F_LID, "utf8")) || {}; } catch { }
 let tLid = null; const guardarLids = () => { clearTimeout(tLid); tLid = setTimeout(() => { try { fs.writeFileSync(F_LID, JSON.stringify(LIDS)); } catch { } }, 1500); };
@@ -510,7 +510,7 @@ export function vigiaCierre(sl, code) {
   if (code === 440) avisar("dup:" + sl.email, "🔴 El WhatsApp de " + vgNom(sl.email) + " se abrió en OTRO puente u otra PC al mismo tiempo. Deja un solo INICIAR.bat abierto (si hay dos, se botan entre ellos y WhatsApp termina desvinculando).", 120);
   if (code === 403) avisar("restr:" + sl.email, "🔴 WhatsApp RESTRINGIÓ el número de " + vgNom(sl.email) + ". Se pausaron sus envíos. Revisar su teléfono.", 360);
 }
-function vgS(sl) { let v = VG.s.get(sl.email); if (!v) { v = { cierres: [], offDesde: 0, qrDesde: 0, colaAntes: 0, ini: 0, ultRes: Date.now(), ultSeq: 0, total: 0, alertado: false }; VG.s.set(sl.email, v); } return v; }
+function vgS(sl) { let v = VG.s.get(sl.email); if (!v) { v = { cierres: [], offDesde: 0, qrDesde: 0, colaAntes: 0, ini: 0, ultRes: Date.now(), ultSeq: 0, total: 0, alertado: false, arranque: true }; VG.s.set(sl.email, v); } return v; }
 export function vigiaRevisar() { return revisar(); }
 function revisar() {
   const ahora = Date.now(), L = limaHora();
@@ -534,7 +534,7 @@ function revisar() {
     /* --- avance de la cola --- */
     const ult = R.length ? R[R.length - 1] : null;
     if (ult && ult.seq !== v.ultSeq) { v.ultSeq = ult.seq; v.ultRes = ahora; }
-    if (q && !v.colaAntes) { v.ini = ult ? ult.seq : 0; v.total = q; v.ultRes = ahora; if (q >= 10) avisar("ini:" + sl.email + v.ini, "🟢 " + n + " empezó una difusión de " + q + " mensajes.", 1); }
+    if (q && !v.colaAntes) { v.ini = ult ? ult.seq : 0; v.total = q; v.ultRes = ahora; if (q >= 10 && st.state === "open" && !v.arranque) avisar("ini:" + sl.email + v.ini, "🟢 " + n + " empezó una difusión de " + q + " mensajes.", 1); v.arranque = false; }
     if (q > v.colaAntes) v.total = Math.max(v.total, q + R.filter(r => r.seq > v.ini).length);
     if (!q && v.colaAntes) {
       const lote = R.filter(r => r.seq > v.ini), ok = lote.filter(r => r.ok).length, mal = lote.length - ok;
@@ -645,13 +645,12 @@ export function escudoEstado(sl) {
    Arranca en 1000/día. Si hay malas señales (poca entrega, números sin WhatsApp, cortes, o recién vinculado)
    el tope baja de forma suave; si todo va bien vuelve a subir. Nunca frena en seco: siempre deja pasar algo.
    Devuelve { tope, salud (0-100), motivo }. */
-const ABSAV = new Map();
-export function absAviso(sl, abs) {
-  const hoy = limaHora().dia, k = sl.email + hoy; if (ABSAV.get(k)) return; ABSAV.set(k, 1);
-  avisar("abs:" + sl.email + hoy, "🟡 Freno ABS: " + vgNom(sl.email) + " llegó a su tope de hoy (" + abs.tope + ", salud " + abs.salud + "/100" + (abs.motivo ? " · " + abs.motivo : "") + "). No se desconectó; sigue mañana. Lo que falte queda en cola.", 600);
-}
+/* ===== Freno ABS (25/11c): NO baja cuántos se envían, solo el TIEMPO entre mensajes =====
+   Para el cliente no cambia nada (salen todos), pero cuando el número está en riesgo van más lentos.
+   Devuelve { ritmo, salud (0-100), motivo }. ritmo 1 = normal; hasta ~3.5 cuando la salud está baja.
+   Trabaja en silencio: no avisa al vendedor ni muestra nada en la app (no asustar). */
 export function escudoABS(sl) {
-  const e = escudo(sl), ahora = Date.now(), st = escudoEstado(sl);
+  const ahora = Date.now(), st = escudoEstado(sl);
   const minsVinc = sl.DATA && sl.DATA.vinculadoTs ? (ahora - sl.DATA.vinculadoTs) / 60000 : 999999;
   let salud = 100, razones = [];
   if (st.entrega < 70) { salud -= (70 - st.entrega) * 1.2; razones.push("llega " + st.entrega + "%"); }
@@ -660,9 +659,9 @@ export function escudoABS(sl) {
   if (minsVinc < 60) { salud -= 35; razones.push("recién vinculado"); }   /* número nuevo = el de mayor riesgo */
   else if (minsVinc < 24 * 60) { salud -= 15; razones.push("vinculado hoy"); }
   salud = Math.max(0, Math.min(100, Math.round(salud)));
-  /* salud 100 → 1000/día; salud 0 → 120/día (nunca 0: siempre sigue enviando, más despacio) */
-  const tope = Math.round(120 + (1000 - 120) * salud / 100);
-  return { tope, salud, motivo: razones.join(", ") };
+  /* salud 100 → ritmo 1 (normal); salud 0 → ritmo 3.5 (más lento, pero sigue enviando todo) */
+  const ritmo = Math.round((1 + (100 - salud) / 100 * 2.5) * 100) / 100;
+  return { ritmo, salud, motivo: razones.join(", ") };
 }
 export function escudoResumen(sl) {
   const ahora = Date.now(), R = sl.DATA.results || [], hora = R.filter(r => r.ok && ahora - Date.parse(r.ts) < 60 * 60000).length;

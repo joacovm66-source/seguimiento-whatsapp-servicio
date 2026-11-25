@@ -122,3 +122,24 @@ test("puente: QR vencido no cuenta como corte, 401 tras 515 no es expulsión, ll
   assert.match(fuente, /SX\.sesionArchivar\(sl\.auth\)/);
   assert.ok(!/loggedOut\) \{ sl\.r401 = 0; try \{ fs\.rmSync/.test(fuente));
 });
+
+/* ===== 25/11b: freno ABS y Telegram informativo ===== */
+test("ABS: número sano = tope 1000; con malas señales baja pero nunca a 0", () => {
+  const sano = { email: "s@x.com", DATA: { results: [], vinculadoTs: Date.now() - 48 * 3600000 }, queue: [], st: {} };
+  const a = SX.escudoABS(sano);
+  assert.equal(a.tope, 1000); assert.equal(a.salud, 100);
+  const nuevo = { email: "n@x.com", DATA: { results: [], vinculadoTs: Date.now() - 5 * 60000 }, queue: [], st: {} };
+  const b = SX.escudoABS(nuevo);
+  assert.ok(b.tope < 1000 && b.tope >= 120, "tope fuera de rango: " + b.tope);
+  assert.ok(b.salud < 100 && b.motivo.includes("recién"), "no detectó número nuevo");
+  assert.ok(SX.escudoABS({ email: "z@x.com", DATA: { results: [], vinculadoTs: 0 }, queue: [], st: {} }).tope >= 120, "frenó en seco");
+});
+test("diagCaida: 401 con mucho envío culpa al volumen, sin envío culpa al teléfono", () => {
+  const now = Date.now(), r = n => Array.from({ length: n }, () => ({ ok: true, ts: new Date(now - 60000).toISOString() }));
+  const alto = { email: "a@x.com", DATA: { results: r(40), vinculadoTs: now - 10 * 60000 }, queue: [120], st: {} };
+  const d1 = SX.diagCaida(alto, 401);
+  assert.ok(/spam|ritmo|volumen|recién/.test(d1), d1);
+  assert.ok(d1.includes("cola: 1"));
+  const cero = { email: "b@x.com", DATA: { results: [], vinculadoTs: now - 10 * 3600000 }, queue: [], st: {} };
+  assert.ok(/teléfono|4 dispositivos|reputación/.test(SX.diagCaida(cero, 401)));
+});

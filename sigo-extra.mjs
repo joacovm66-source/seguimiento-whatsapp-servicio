@@ -14,7 +14,7 @@ const DIR = path.dirname(fileURLToPath(import.meta.url));
 const STORE = process.env.DATA_DIR || DIR;
 const MDIR = path.join(STORE, "media"); fs.mkdirSync(MDIR, { recursive: true });
 const F_LID = path.join(STORE, "lids.json");
-export const VERSION = "2026-11-25a";
+export const VERSION = "2026-11-25b";
 const digits = s => String(s || "").replace(/\D/g, "");
 let LIDS = {}; try { LIDS = JSON.parse(fs.readFileSync(F_LID, "utf8")) || {}; } catch { }
 let tLid = null; const guardarLids = () => { clearTimeout(tLid); tLid = setTimeout(() => { try { fs.writeFileSync(F_LID, JSON.stringify(LIDS)); } catch { } }, 1500); };
@@ -483,9 +483,26 @@ const limaHora = () => { const d = new Date(Date.now() - 5 * 3600000); return { 
 export function vigiaError(e) { VG.errores.push(Date.now()); VG.ultErr = String(e && e.message || e).slice(0, 150); }
 const MOTIVO = { 401: "cerraron la sesión desde el teléfono o WhatsApp la expulsó", 403: "WhatsApp restringió el número", 408: "se cortó la conexión (internet)", 428: "WhatsApp cerró la conexión", 440: "la misma cuenta se abrió en otro lugar (otro puente o otro QR)", 500: "sesión dañada", 515: "reinicio normal tras vincular" };
 export const vgMotivo = c => c ? (MOTIVO[c] || "código " + c) + " [" + c + "]" : "";
+/* Diagnóstico de una caída: un solo mensaje con todo lo que importa, sin rodeos. */
+export function diagCaida(sl, code) {
+  const ahora = Date.now(), R = sl.DATA.results || [], st = escudoEstado(sl);
+  const h1 = R.filter(r => r.ok && ahora - Date.parse(r.ts) < 60 * 60000).length;
+  const m5 = R.filter(r => ahora - Date.parse(r.ts) < 5 * 60000).length;
+  const minsVinc = sl.DATA.vinculadoTs ? Math.round((ahora - sl.DATA.vinculadoTs) / 60000) : null;
+  const L = [];
+  L.push("cola: " + (sl.queue.length || 0));
+  L.push("enviados: " + h1 + "/h, " + m5 + " en los últimos 5 min");
+  if (st.entrega < 100) L.push("llegaban: " + st.entrega + "%");
+  if (st.sin_whatsapp > 0) L.push("sin WhatsApp: " + st.sin_whatsapp + "%");
+  if (minsVinc != null && minsVinc < 24 * 60) L.push("vinculado hace " + (minsVinc < 60 ? minsVinc + " min" : Math.round(minsVinc / 60) + " h"));
+  const causa = code === 401 ? (h1 >= 30 || m5 >= 5 ? "Causa probable: WhatsApp sospechó spam por el ritmo/volumen." : minsVinc != null && minsVinc < 120 ? "Causa probable: número recién vinculado enviando mucho." : h1 === 0 ? "Causa probable: lo cerraron desde el teléfono o pasó de 4 dispositivos." : "Causa probable: reputación del número.")
+    : code === 403 ? "WhatsApp restringió el número (no es un corte normal)."
+    : code === 440 ? "La misma cuenta está abierta en otro puente u otra PC." : "";
+  return L.join(" · ") + (causa ? "\n" + causa : "");
+}
 export function vigiaCierre(sl, code) {
   escudoCorte(sl, code);
-  if (code === 401) avisar("d401:" + sl.email, "🔴 WhatsApp DESVINCULÓ a " + vgNom(sl.email) + " [401]. " + escudoResumen(sl) + (sl.queue.length ? " Quedan " + sl.queue.length + " en cola (no se pierden)." : "") + " Debe escanear el QR otra vez.", 30);
+  if (code === 401) avisar("d401:" + sl.email, "🔴 Se desvinculó " + vgNom(sl.email) + " [401]\n" + diagCaida(sl, 401) + "\nAcción: el vendedor debe escanear el QR en Sigo. La cola no se pierde.", 30);
   const v = vgS(sl); v.cierres.push(Date.now()); v.ultCod = code; v.motivos = (v.motivos || []).concat(vgMotivo(code) + " " + hLima(Date.now())).slice(-5); sl.motivosCierre = v.motivos;
   try { /* se guarda en datos.json: el motivo no se pierde aunque el puente se reinicie */
     const L = limaHora(); sl.DATA.cortes = (sl.DATA.cortes || []).concat({ fecha: L.dia, hora: hLima(Date.now()), codigo: code || 0, motivo: vgMotivo(code) || "sin código" }).slice(-15);
@@ -507,13 +524,13 @@ function revisar() {
     } else if (st.state === "qr") {
       v.qrDesde = v.qrDesde || ahora;
       if (q && ahora - v.qrDesde > 5 * 60000) avisarVendedor(sl, q, vgMotivo(v.ultCod));
-      if (q && ahora - v.qrDesde > 3 * 60000) { avisar("qr:" + sl.email, "🔴 " + n + " tiene " + q + " mensajes pendientes pero su WhatsApp está DESVINCULADO (pide QR). Debe volver a conectarlo en Sigo.", 60); v.alertado = true; }
+      if (q && ahora - v.qrDesde > 5 * 60000) { avisar("qr:" + sl.email, "🟡 Recordatorio: " + n + " sigue desvinculado con " + q + " en cola (" + Math.round((ahora - v.qrDesde) / 60000) + " min). Debe escanear el QR en Sigo.", 120, false); v.alertado = true; }
     } else {
       v.offDesde = v.offDesde || ahora;
       if (/cerró la sesión/i.test(st.err || "")) { avisar("out:" + sl.email, "🔴 Se desvinculó el WhatsApp de " + n + " (" + (vgMotivo(v.ultCod) || "cerraron la sesión desde el teléfono") + ")." + (q ? " Tiene " + q + " pendientes." : "") + " Debe escanear el QR otra vez.", q || v.vivo ? 180 : 1440); v.alertado = true; }
       else if ((q || v.vivo) && ahora - v.offDesde > 10 * 60000 && !/restringió|otro puente/i.test(st.err || "")) { avisar("off:" + sl.email, (q ? "🔴" : "🟡") + " El WhatsApp de " + n + " lleva " + Math.round((ahora - v.offDesde) / 60000) + " min sin conexión (el puente sigue reintentando solo)." + (q ? " Tiene " + q + " pendientes; salen solos al volver." : ""), 60); v.alertado = true; }
     }
-    if (v.cierres.length >= 4) avisar("loop:" + sl.email, "🟡 PREVENTIVO: el WhatsApp de " + n + " se reconectó " + v.cierres.length + " veces en 15 min. Puede desvincularse pronto. Revisar internet de la PC y que su teléfono tenga señal.", 60);
+    if (v.cierres.length >= 6) avisar("loop:" + sl.email, "🟡 " + n + " se reconectó " + v.cierres.length + " veces en 15 min (suele ser internet de la PC, no WhatsApp).", 120, false);
     /* --- avance de la cola --- */
     const ult = R.length ? R[R.length - 1] : null;
     if (ult && ult.seq !== v.ultSeq) { v.ultSeq = ult.seq; v.ultRes = ahora; }
@@ -624,6 +641,29 @@ export function escudoEstado(sl) {
   return { nivel, motivo, ritmo: nivel ? 2 : 1, frenoMs: Math.max(0, e.frenoHasta - ahora), entrega: Math.round(entrega * 100), sin_whatsapp: Math.round(noEx * 100), cortes_30min: cortes };
 }
 /* Resumen para el aviso de desvinculado: qué pasaba justo antes del corte */
+/* ===== Freno ABS (25/11): en vez de parar del todo, baja el tope del día del número según su salud =====
+   Arranca en 1000/día. Si hay malas señales (poca entrega, números sin WhatsApp, cortes, o recién vinculado)
+   el tope baja de forma suave; si todo va bien vuelve a subir. Nunca frena en seco: siempre deja pasar algo.
+   Devuelve { tope, salud (0-100), motivo }. */
+const ABSAV = new Map();
+export function absAviso(sl, abs) {
+  const hoy = limaHora().dia, k = sl.email + hoy; if (ABSAV.get(k)) return; ABSAV.set(k, 1);
+  avisar("abs:" + sl.email + hoy, "🟡 Freno ABS: " + vgNom(sl.email) + " llegó a su tope de hoy (" + abs.tope + ", salud " + abs.salud + "/100" + (abs.motivo ? " · " + abs.motivo : "") + "). No se desconectó; sigue mañana. Lo que falte queda en cola.", 600);
+}
+export function escudoABS(sl) {
+  const e = escudo(sl), ahora = Date.now(), st = escudoEstado(sl);
+  const minsVinc = sl.DATA && sl.DATA.vinculadoTs ? (ahora - sl.DATA.vinculadoTs) / 60000 : 999999;
+  let salud = 100, razones = [];
+  if (st.entrega < 70) { salud -= (70 - st.entrega) * 1.2; razones.push("llega " + st.entrega + "%"); }
+  if (st.sin_whatsapp > 15) { salud -= (st.sin_whatsapp - 15); razones.push(st.sin_whatsapp + "% sin WhatsApp"); }
+  if (st.cortes_30min >= 1) { salud -= st.cortes_30min * 12; razones.push(st.cortes_30min + " cortes"); }
+  if (minsVinc < 60) { salud -= 35; razones.push("recién vinculado"); }   /* número nuevo = el de mayor riesgo */
+  else if (minsVinc < 24 * 60) { salud -= 15; razones.push("vinculado hoy"); }
+  salud = Math.max(0, Math.min(100, Math.round(salud)));
+  /* salud 100 → 1000/día; salud 0 → 120/día (nunca 0: siempre sigue enviando, más despacio) */
+  const tope = Math.round(120 + (1000 - 120) * salud / 100);
+  return { tope, salud, motivo: razones.join(", ") };
+}
 export function escudoResumen(sl) {
   const ahora = Date.now(), R = sl.DATA.results || [], hora = R.filter(r => r.ok && ahora - Date.parse(r.ts) < 60 * 60000).length;
   const s = escudoEstado(sl);

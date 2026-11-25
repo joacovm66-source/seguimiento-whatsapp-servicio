@@ -116,7 +116,7 @@ async function startWA(sl) {
         sl.rq = Date.now(); sl.gen++; sl.started = false; try { sock.end(undefined); } catch { } log(sl.email, "pidió QR estando vinculado: restauro credenciales y reintento");
         setTimeout(() => { SX.credsRestaurar(sl.auth, true); startWA(sl); }, 3000); return; }
       if (u.qr) { sl.qrVisto = true; sl.st.state = "qr"; sl.st.qr = await QRCode.toDataURL(u.qr, { margin: 2, scale: 6, errorCorrectionLevel: "M" }); log(sl.email, "espera que escaneen el QR"); }
-      if (u.connection === "open") { sl.retry = 0; sl.r500 = 0; sl.qrRondas = 0; sl.qrVisto = false; SX.credsRespaldar(sl.auth); sl.DATA.desvinculado = null; sl.st.state = "open"; sl.st.qr = null; sl.st.err = ""; sl.st.me = digits((sock.user && sock.user.id || "").split(":")[0].split("@")[0]); log(sl.email, "WhatsApp conectado:", sl.st.me); if (sl.queue.length) worker(sl); }
+      if (u.connection === "open") { sl.retry = 0; sl.r500 = 0; sl.qrRondas = 0; sl.qrVisto = false; SX.credsRespaldar(sl.auth); if (!sl.DATA.vinculadoTs) { sl.DATA.vinculadoTs = Date.now(); saveData(sl); } sl.DATA.desvinculado = null; sl.st.state = "open"; sl.st.qr = null; sl.st.err = ""; sl.st.me = digits((sock.user && sock.user.id || "").split(":")[0].split("@")[0]); log(sl.email, "WhatsApp conectado:", sl.st.me); if (sl.queue.length) worker(sl); }
       if (u.connection === "close") {
         const code = u.lastDisconnect && u.lastDisconnect.error && u.lastDisconnect.error.output && u.lastDisconnect.error.output.statusCode;
         log(sl.email, "conexión cerrada, código", code, String(u.lastDisconnect && u.lastDisconnect.error && u.lastDisconnect.error.message || "").slice(0, 120));
@@ -181,7 +181,8 @@ async function worker(sl) {
   while (queue.length) {
     if (sl.paused || st.state !== "open") { await sleep(3000); continue; }
     if (DATA.day !== today()) { DATA.day = today(); DATA.sentToday = 0; }
-    const capHoy = Math.min(CFG.dailyCap, (sl.acc && sl.acc.tope_dia) || Infinity);
+    const abs = SX.escudoABS(sl); const capHoy = Math.min(CFG.dailyCap, (sl.acc && sl.acc.tope_dia) || Infinity, abs.tope);
+    if (DATA.sentToday >= abs.tope && DATA.sentToday < capHoy) { st.err = "Freno ABS: hoy ya salieron " + DATA.sentToday + " desde este número (salud " + abs.salud + "/100" + (abs.motivo ? ": " + abs.motivo : "") + "). Sigue mañana para cuidarlo."; SX.absAviso(sl, abs); await sleep(60000); continue; }
     if (restantes(sl.acc) <= 0) { st.err = "Se acabaron los envíos de su plan."; queue.length = 0; break; }
     if (DATA.sentToday >= capHoy) { st.err = "Se alcanzó el tope diario (" + capHoy + "). Continúa mañana."; await sleep(60000); continue; }
     st.err = "";

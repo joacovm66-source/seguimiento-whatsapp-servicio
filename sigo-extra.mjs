@@ -14,7 +14,7 @@ const DIR = path.dirname(fileURLToPath(import.meta.url));
 const STORE = process.env.DATA_DIR || DIR;
 const MDIR = path.join(STORE, "media"); fs.mkdirSync(MDIR, { recursive: true });
 const F_LID = path.join(STORE, "lids.json");
-export const VERSION = "2026-11-25f";
+export const VERSION = "2026-11-25g";
 const digits = s => String(s || "").replace(/\D/g, "");
 let LIDS = {}; try { LIDS = JSON.parse(fs.readFileSync(F_LID, "utf8")) || {}; } catch { }
 let tLid = null; const guardarLids = () => { clearTimeout(tLid); tLid = setTimeout(() => { try { fs.writeFileSync(F_LID, JSON.stringify(LIDS)); } catch { } }, 1500); };
@@ -515,11 +515,27 @@ export function vigiaCierre(sl, code) {
   escudoCorte(sl, code);
   if (code === 401) avisar("d401:" + sl.email, "🔴 Se desvinculó " + vgNom(sl.email) + " [401]\n" + diagCaida(sl, 401) + "\nAcción: el vendedor debe escanear el QR en Sigo. La cola no se pierde.", 30);
   const v = vgS(sl); v.cierres.push(Date.now()); v.ultCod = code; v.motivos = (v.motivos || []).concat(vgMotivo(code) + " " + hLima(Date.now())).slice(-5); sl.motivosCierre = v.motivos;
+  if (code === 401 || code === 403) registrarDesvinc(sl, code);   /* guardar el patrón de cada desvinculación real */
   try { /* se guarda en datos.json: el motivo no se pierde aunque el puente se reinicie */
     const L = limaHora(); sl.DATA.cortes = (sl.DATA.cortes || []).concat({ fecha: L.dia, hora: hLima(Date.now()), codigo: code || 0, motivo: vgMotivo(code) || "sin código" }).slice(-15);
     if (code === 401) sl.DATA.desvinculado = { fecha: L.dia, hora: hLima(Date.now()), motivo: vgMotivo(code) }; } catch { }
   if (code === 440) avisar("dup:" + sl.email, "🔴 El WhatsApp de " + vgNom(sl.email) + " se abrió en OTRO puente u otra PC al mismo tiempo. Deja un solo INICIAR.bat abierto (si hay dos, se botan entre ellos y WhatsApp termina desvinculando).", 120);
   if (code === 403) avisar("restr:" + sl.email, "🔴 WhatsApp RESTRINGIÓ el número de " + vgNom(sl.email) + ". Se pausaron sus envíos. Revisar su teléfono.", 360);
+}
+async function registrarDesvinc(sl, code) {
+  try {
+    const S = VCTX && VCTX.supa; if (!S) return;
+    const ahora = Date.now(), R = sl.DATA.results || [], st = escudoEstado(sl);
+    const p = {
+      email: sl.email, codigo: code, motivo: vgMotivo(code),
+      enviados_1h: R.filter(r => r.ok && ahora - Date.parse(r.ts) < 3600000).length,
+      enviados_5min: R.filter(r => ahora - Date.parse(r.ts) < 5 * 60000).length,
+      min_vinculado: sl.DATA.vinculadoTs ? Math.round((ahora - sl.DATA.vinculadoTs) / 60000) : null,
+      cola: sl.queue.length, entrega: st.entrega, sin_whatsapp: st.sin_whatsapp,
+      detalle: { dia_calentamiento: diasVinculado(sl) + 1, cortes_30min: st.cortes_30min }
+    };
+    await fetch(S.url + "/functions/v1/puente", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fn: "puente_desvinculacion", args: { secret: S.secret, p } }) });
+  } catch { }
 }
 function vgS(sl) { let v = VG.s.get(sl.email); if (!v) { v = { cierres: [], offDesde: 0, qrDesde: 0, colaAntes: 0, ini: 0, ultRes: Date.now(), ultSeq: 0, total: 0, alertado: false, arranque: true }; VG.s.set(sl.email, v); } return v; }
 export function vigiaRevisar() { return revisar(); }

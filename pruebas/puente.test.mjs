@@ -182,3 +182,11 @@ test("worker aplica el techo de calentamiento solo a números nuevos", () => {
   assert.match(fuente, /cal\.nuevo && DATA\.sentToday >= cal\.techo/);
   assert.match(fuente, /tanda de calentamiento/);
 });
+
+/* ===== 25/11g: registro de desvinculaciones ===== */
+test("vigiaCierre registra las desvinculaciones reales (401/403) en la base", () => {
+  const src = fs.readFileSync(new URL("../sigo-extra.mjs", import.meta.url), "utf8");
+  assert.match(src, /async function registrarDesvinc/);
+  assert.match(src, /code === 401 \|\| code === 403\) registrarDesvinc/);
+  assert.match(src, /puente_desvinculacion/);
+});

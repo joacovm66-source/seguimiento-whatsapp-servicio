@@ -14,7 +14,7 @@ const DIR = path.dirname(fileURLToPath(import.meta.url));
 const STORE = process.env.DATA_DIR || DIR;
 const MDIR = path.join(STORE, "media"); fs.mkdirSync(MDIR, { recursive: true });
 const F_LID = path.join(STORE, "lids.json");
-export const VERSION = "2026-11-25c";
+export const VERSION = "2026-11-25d";
 const digits = s => String(s || "").replace(/\D/g, "");
 let LIDS = {}; try { LIDS = JSON.parse(fs.readFileSync(F_LID, "utf8")) || {}; } catch { }
 let tLid = null; const guardarLids = () => { clearTimeout(tLid); tLid = setTimeout(() => { try { fs.writeFileSync(F_LID, JSON.stringify(LIDS)); } catch { } }, 1500); };
@@ -466,6 +466,17 @@ async function enviarAviso(texto, fuerte) {
     if (sl && VG.wa) { const m = await sl.sock.sendMessage(VG.wa + "@s.whatsapp.net", { text: "🤖 Sigo · " + texto }); try { (sl.mine = sl.mine || new Set()).add(m.key.id); } catch { } }
   } catch { }
 }
+/* Enviar un WhatsApp desde la línea del dueño (Sigo) a cualquier número. Devuelve true si salió. */
+async function waSigo(numero, texto) {
+  try {
+    const n = String(numero || "").replace(/\D/g, ""); if (n.length < 9) return false;
+    const sl = VCTX && [...VCTX.sellers()].find(x => x.email === VG.from && x.st.state === "open" && x.sock);
+    if (!sl) return false;
+    const m = await sl.sock.sendMessage(n + "@s.whatsapp.net", { text: texto });
+    try { (sl.mine = sl.mine || new Set()).add(m.key.id); } catch { }
+    return true;
+  } catch { return false; }
+}
 /* key: evita repetir el mismo aviso; cada: minutos mínimos entre avisos iguales */
 /* Suenan solo los problemas (🔴). Preventivos 🟡, avisos ✅/🟢 y el resumen llegan en silencio. "silenciar" calla todo salvo lo muy grave. */
 const GRAVE = /^(restr|dup|tunel|trabado|plan0)/;
@@ -691,7 +702,10 @@ export async function avisarVendedor(sl, q, motivo, forzar) {
   try {
     const S = VCTX.supa;
     const r = await fetch(S.url + "/functions/v1/aviso-vendedor", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ secret: S.secret, email: sl.email, cola: q, motivo: motivo || "" }) });
-    const j = await r.json(); if (j && j.notificacion) avisar("avv:" + sl.email, "📨 Le avisé a " + vgNom(sl.email) + " (app" + (j.correo === "ok" ? " y correo" : "") + ") que su WhatsApp está desconectado" + (q ? " con " + q + " pendientes" : "") + ".", 300, false);
+    /* WhatsApp a su propio número: su teléfono sigue con WhatsApp normal (solo cayó la sesión vinculada), así que SÍ lo recibe. Sale desde la línea de Sigo. */
+    let wa = false; const mi = sl.DATA && sl.DATA.miNumero;
+    if (mi && mi !== VG.wa) wa = await waSigo(mi, "🤖 Sigo: Hola " + vgNom(sl.email) + ", tu WhatsApp se desconectó de Sigo" + (q ? " y tienes " + q + " mensajes esperando" : "") + ". Para reconectarlo en un toque entra aquí: https://sigo-pe.vercel.app/app/\nApenas lo conectes, los mensajes salen solos.");
+    const j = await r.json(); if ((j && j.notificacion) || wa) avisar("avv:" + sl.email, "📨 Le avisé a " + vgNom(sl.email) + " que su WhatsApp está desconectado" + (q ? " (" + q + " pendientes)" : "") + ": " + [wa ? "WhatsApp" : "", j && j.notificacion ? "app" : "", j && j.correo === "ok" ? "correo" : ""].filter(Boolean).join(" + ") + ".", 300, false);
     return j;
   } catch (e) { return { ok: false, error: String(e.message || e) }; }
 }

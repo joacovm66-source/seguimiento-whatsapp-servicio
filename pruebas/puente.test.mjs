@@ -143,3 +143,15 @@ test("diagCaida: 401 con mucho envío culpa al volumen, sin envío culpa al tel�
   const cero = { email: "b@x.com", DATA: { results: [], vinculadoTs: now - 10 * 3600000 }, queue: [], st: {} };
   assert.ok(/teléfono|4 dispositivos|reputación/.test(SX.diagCaida(cero, 401)));
 });
+
+/* ===== 25/11d: guardar número propio y avisar al WhatsApp del vendedor ===== */
+test("puente: guarda el número propio del vendedor y lo manda en presencia aunque esté caído", () => {
+  assert.match(fuente, /sl\.DATA\.miNumero = sl\.st\.me/);
+  assert.match(fuente, /me: sl\.st\.me \|\| sl\.DATA\.miNumero \|\| ""/);
+});
+test("avisarVendedor: manda WhatsApp al número propio desde la línea de Sigo (no a sí mismo)", () => {
+  const src = fs.readFileSync(new URL("../sigo-extra.mjs", import.meta.url), "utf8");
+  assert.match(src, /async function waSigo/);
+  assert.match(src, /mi && mi !== VG\.wa/);                 // no se auto-avisa
+  assert.match(src, /tu WhatsApp se desconectó de Sigo/);   // el texto que ve el vendedor
+});

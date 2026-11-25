@@ -116,7 +116,7 @@ async function startWA(sl) {
         sl.rq = Date.now(); sl.gen++; sl.started = false; try { sock.end(undefined); } catch { } log(sl.email, "pidió QR estando vinculado: restauro credenciales y reintento");
         setTimeout(() => { SX.credsRestaurar(sl.auth, true); startWA(sl); }, 3000); return; }
       if (u.qr) { sl.qrVisto = true; sl.st.state = "qr"; sl.st.qr = await QRCode.toDataURL(u.qr, { margin: 2, scale: 6, errorCorrectionLevel: "M" }); log(sl.email, "espera que escaneen el QR"); }
-      if (u.connection === "open") { sl.retry = 0; sl.r500 = 0; sl.qrRondas = 0; sl.qrVisto = false; SX.credsRespaldar(sl.auth); if (!sl.DATA.vinculadoTs) { sl.DATA.vinculadoTs = Date.now(); saveData(sl); } sl.DATA.desvinculado = null; sl.st.state = "open"; sl.st.qr = null; sl.st.err = ""; sl.st.me = digits((sock.user && sock.user.id || "").split(":")[0].split("@")[0]); log(sl.email, "WhatsApp conectado:", sl.st.me); if (sl.queue.length) worker(sl); }
+      if (u.connection === "open") { sl.retry = 0; sl.r500 = 0; sl.qrRondas = 0; sl.qrVisto = false; SX.credsRespaldar(sl.auth); if (!sl.DATA.vinculadoTs) { sl.DATA.vinculadoTs = Date.now(); } if (sl.st.me && sl.DATA.miNumero !== sl.st.me) { sl.DATA.miNumero = sl.st.me; } saveData(sl); sl.DATA.desvinculado = null; sl.st.state = "open"; sl.st.qr = null; sl.st.err = ""; sl.st.me = digits((sock.user && sock.user.id || "").split(":")[0].split("@")[0]); log(sl.email, "WhatsApp conectado:", sl.st.me); if (sl.queue.length) worker(sl); }
       if (u.connection === "close") {
         const code = u.lastDisconnect && u.lastDisconnect.error && u.lastDisconnect.error.output && u.lastDisconnect.error.output.statusCode;
         log(sl.email, "conexión cerrada, código", code, String(u.lastDisconnect && u.lastDisconnect.error && u.lastDisconnect.error.message || "").slice(0, 120));
@@ -326,7 +326,7 @@ async function openTunnel() {
 }
 setInterval(publish, 60000);
 /* Presencia: cada 30 s avisa a Sigo qué vendedores tienen su WhatsApp conectado (el jefe lo ve en tiempo real). */
-setInterval(async () => { if (MOCK) return; const l = [...sellers.values()].map(sl => { let esc = ""; try { const x = SX.escudoEstado(sl); esc = x.nivel ? (x.nivel === 2 ? "freno: " : "lento: ") + x.motivo : ""; } catch { } return { email: sl.email, state: sl.st.state, me: sl.st.me || "", err: sl.st.err || "", cola: sl.queue.length, cortes: (sl.DATA.cortes || []).slice(-6), escudo: esc, ver: SX.VERSION }; }); if (l.length) { try { await rpc("puente_presencia", { p_lista: l }); } catch { } } }, 30000);
+setInterval(async () => { if (MOCK) return; const l = [...sellers.values()].map(sl => { let esc = ""; try { const x = SX.escudoEstado(sl); esc = x.nivel ? (x.nivel === 2 ? "freno: " : "lento: ") + x.motivo : ""; } catch { } return { email: sl.email, state: sl.st.state, me: sl.st.me || sl.DATA.miNumero || "", err: sl.st.err || "", cola: sl.queue.length, cortes: (sl.DATA.cortes || []).slice(-6), escudo: esc, ver: SX.VERSION }; }); if (l.length) { try { await rpc("puente_presencia", { p_lista: l }); } catch { } } }, 30000);
 
 server.listen(PORT, HOST, () => {
   console.log("\n==============================================");

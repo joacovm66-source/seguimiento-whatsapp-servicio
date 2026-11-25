@@ -279,7 +279,8 @@ const server = http.createServer(async (req, res) => {
       let r = +u.searchParams.get("r") || 0, p = +u.searchParams.get("p") || 0;
       if (p > DATA.rseq) p = 0; if (r > DATA.seq) r = 0; /* la app va adelantada (puente reinstalado): mandarle todo */
       if (p > 0) { const n0 = DATA.replies.length; DATA.replies = DATA.replies.filter(x => x.seq > p || Date.now() - Date.parse(x.ts) < 3600000); if (DATA.replies.length !== n0) saveData(sl); } /* privacidad: no se guardan respuestas ya recibidas por la app */
-      return send(res, 200, { state: st.state, qr: st.qr, me: st.me, err: st.err, pending: queue.length, sentToday: DATA.sentToday, cap: CFG.dailyCap, paused: sl.paused, pausedBy: sl.pausa ? sl.pausa.por : "", breakIn: sl.breakUntil ? Math.max(0, Math.round((sl.breakUntil - Date.now()) / 1000)) : 0, cfg: { minDelay: CFG.minDelay, maxDelay: CFG.maxDelay, batch: CFG.batch, pauseMin: CFG.pauseMin }, results: DATA.results.filter(x => x.seq > r), replies: DATA.replies.filter(x => x.seq > p && (!x.me || u.searchParams.get("me") === "1")), seq: DATA.seq, rseq: DATA.rseq });
+      const _cal = SX.calentamiento(sl);
+      return send(res, 200, { state: st.state, qr: st.qr, me: st.me, err: st.err, pending: queue.length, sentToday: DATA.sentToday, cap: CFG.dailyCap, cal: (_cal.nuevo && queue.length) ? { on: true, frase: SX.fraseCalentando(), horas: _cal.horas } : null, paused: sl.paused, pausedBy: sl.pausa ? sl.pausa.por : "", breakIn: sl.breakUntil ? Math.max(0, Math.round((sl.breakUntil - Date.now()) / 1000)) : 0, cfg: { minDelay: CFG.minDelay, maxDelay: CFG.maxDelay, batch: CFG.batch, pauseMin: CFG.pauseMin }, results: DATA.results.filter(x => x.seq > r), replies: DATA.replies.filter(x => x.seq > p && (!x.me || u.searchParams.get("me") === "1")), seq: DATA.seq, rseq: DATA.rseq });
     }
     if (u.pathname === "/pair" && req.method === "POST") {
       const b = await body(req), phone = digits(b.phone || "");

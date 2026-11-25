@@ -116,7 +116,7 @@ async function startWA(sl) {
         sl.rq = Date.now(); sl.gen++; sl.started = false; try { sock.end(undefined); } catch { } log(sl.email, "pidió QR estando vinculado: restauro credenciales y reintento");
         setTimeout(() => { SX.credsRestaurar(sl.auth, true); startWA(sl); }, 3000); return; }
       if (u.qr) { sl.qrVisto = true; sl.st.state = "qr"; sl.st.qr = await QRCode.toDataURL(u.qr, { margin: 2, scale: 6, errorCorrectionLevel: "M" }); log(sl.email, "espera que escaneen el QR"); }
-      if (u.connection === "open") { sl.retry = 0; sl.r500 = 0; sl.qrRondas = 0; sl.qrVisto = false; SX.credsRespaldar(sl.auth); if (!sl.DATA.vinculadoTs) { sl.DATA.vinculadoTs = Date.now(); } if (sl.st.me && sl.DATA.miNumero !== sl.st.me) { sl.DATA.miNumero = sl.st.me; } saveData(sl); sl.DATA.desvinculado = null; sl.st.state = "open"; sl.st.qr = null; sl.st.err = ""; sl.st.me = digits((sock.user && sock.user.id || "").split(":")[0].split("@")[0]); log(sl.email, "WhatsApp conectado:", sl.st.me); if (sl.queue.length) worker(sl); }
+      if (u.connection === "open") { sl.retry = 0; sl.r500 = 0; sl.qrRondas = 0; sl.qrVisto = false; SX.credsRespaldar(sl.auth); if (!sl.DATA.vinculadoTs) { sl.DATA.vinculadoTs = Date.now(); } if (sl.st.me && sl.DATA.miNumero !== sl.st.me) { sl.DATA.miNumero = sl.st.me; } sl.DATA.avisoEpisodio = false; saveData(sl); sl.DATA.desvinculado = null; sl.st.state = "open"; sl.st.qr = null; sl.st.err = ""; sl.st.me = digits((sock.user && sock.user.id || "").split(":")[0].split("@")[0]); log(sl.email, "WhatsApp conectado:", sl.st.me); if (sl.queue.length) worker(sl); }
       if (u.connection === "close") {
         const code = u.lastDisconnect && u.lastDisconnect.error && u.lastDisconnect.error.output && u.lastDisconnect.error.output.statusCode;
         log(sl.email, "conexión cerrada, código", code, String(u.lastDisconnect && u.lastDisconnect.error && u.lastDisconnect.error.message || "").slice(0, 120));
@@ -183,7 +183,7 @@ async function worker(sl) {
     if (DATA.day !== today()) { DATA.day = today(); DATA.sentToday = 0; }
     const cal = SX.calentamiento(sl), capHoy = Math.min(CFG.dailyCap, (sl.acc && sl.acc.tope_dia) || Infinity);
     if (restantes(sl.acc) <= 0) { st.err = "Se acabaron los envíos de su plan."; queue.length = 0; break; }
-    if (cal.nuevo && DATA.sentToday >= cal.techo) { st.err = "Número nuevo: hoy salieron " + DATA.sentToday + " (tanda de calentamiento, día " + (cal.dia + 1) + "). El resto sale mañana solo, para cuidar el número."; SX.calAviso(sl, cal); await sleep(60000); continue; }
+    if (cal.nuevo && DATA.sentToday >= cal.techo) { st.err = "✅ Se están enviando todos tus mensajes. Hoy va un poco más lento porque tu número es nuevo; el resto sale en un rato solo, no tienes que hacer nada."; SX.calAviso(sl, cal); await sleep(5 * 60000); continue; }
     if (DATA.sentToday >= capHoy) { st.err = "Se alcanzó el tope diario (" + capHoy + "). Continúa mañana."; await sleep(60000); continue; }
     st.err = "";
     if (sl.sinceBreak >= CFG.batch) { sl.breakUntil = Date.now() + CFG.pauseMin * 60000; log(sl.email, "descanso", CFG.pauseMin, "min"); await sleep(CFG.pauseMin * 60000); sl.sinceBreak = 0; sl.breakUntil = 0; continue; }

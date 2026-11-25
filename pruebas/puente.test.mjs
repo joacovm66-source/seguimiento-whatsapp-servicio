@@ -165,22 +165,23 @@ test("al reconectar, si se avisó la caída, se manda la reanudación al WhatsAp
 });
 
 /* ===== 25/11f: calentamiento de números nuevos ===== */
-test("calentamiento: número nuevo sube de tanda por día; número viejo sin techo", () => {
-  const dia = (n) => ({ email: "x@y.com", DATA: { vinculadoTs: Date.now() - n * 24 * 3600000 } });
-  assert.equal(SX.calentamiento(dia(0)).techo, 150);
-  assert.equal(SX.calentamiento(dia(1)).techo, 300);
-  assert.equal(SX.calentamiento(dia(3)).techo, 800);
-  assert.equal(SX.calentamiento(dia(5)).techo, Infinity);   // ya caliente
-  assert.equal(SX.calentamiento(dia(5)).nuevo, false);
+test("calentamiento: el techo sube POR HORAS y a las 48h ya no hay techo", () => {
+  const hrs = (n) => ({ email: "x@y.com", DATA: { vinculadoTs: Date.now() - n * 3600000 } });
+  assert.equal(SX.calentamiento(hrs(0)).techo, 40);     // recién vinculado
+  assert.equal(SX.calentamiento(hrs(5)).techo, 220);    // 5 h
+  assert.equal(SX.calentamiento(hrs(13)).techo, 600);   // 13 h
+  assert.equal(SX.calentamiento(hrs(50)).techo, Infinity); // ya caliente
+  assert.equal(SX.calentamiento(hrs(50)).nuevo, false);
+  assert.ok(SX.calentamiento(hrs(5)).techo < SX.calentamiento(hrs(13)).techo, "no sube con las horas");
 });
-test("calentamiento: si se desvinculó hace poco, retrocede un escalón", () => {
+test("calentamiento: si se desvinculó hace poco, baja el techo a la mitad", () => {
   const hoy = new Date(Date.now() - 5 * 3600000).toISOString().slice(0, 10);
-  const sl = { email: "z@y.com", DATA: { vinculadoTs: Date.now() - 2 * 24 * 3600000, desvinculado: { fecha: hoy, hora: "10:00" } } };
-  assert.equal(SX.calentamiento(sl).techo, 300);   // día 2 (=500) baja a día 1 (=300)
+  const sl = { email: "z@y.com", DATA: { vinculadoTs: Date.now() - 13 * 3600000, desvinculado: { fecha: hoy, hora: "10:00" } } };
+  assert.equal(SX.calentamiento(sl).techo, 300);   // 600 / 2
 });
 test("worker aplica el techo de calentamiento solo a números nuevos", () => {
   assert.match(fuente, /cal\.nuevo && DATA\.sentToday >= cal\.techo/);
-  assert.match(fuente, /tanda de calentamiento/);
+  assert.match(fuente, /Se están enviando todos tus mensajes/);
 });
 
 /* ===== 25/11g: registro de desvinculaciones ===== */
@@ -189,4 +190,11 @@ test("vigiaCierre registra las desvinculaciones reales (401/403) en la base", ()
   assert.match(src, /async function registrarDesvinc/);
   assert.match(src, /code === 401 \|\| code === 403\) registrarDesvinc/);
   assert.match(src, /puente_desvinculacion/);
+});
+
+/* ===== 25/11h: aviso al vendedor una sola vez por caída ===== */
+test("avisarVendedor: no repite el aviso en la misma caída (avisoEpisodio)", () => {
+  const src = fs.readFileSync(new URL("../sigo-extra.mjs", import.meta.url), "utf8");
+  assert.match(src, /sl\.DATA\.avisoEpisodio && !forzar\) return null/);
+  assert.match(fuente, /sl\.DATA\.avisoEpisodio = false/);   // se reinicia al reconectar
 });

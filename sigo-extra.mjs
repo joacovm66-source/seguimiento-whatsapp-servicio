@@ -14,7 +14,7 @@ const DIR = path.dirname(fileURLToPath(import.meta.url));
 const STORE = process.env.DATA_DIR || DIR;
 const MDIR = path.join(STORE, "media"); fs.mkdirSync(MDIR, { recursive: true });
 const F_LID = path.join(STORE, "lids.json");
-export const VERSION = "2026-11-25e";
+export const VERSION = "2026-11-25f";
 const digits = s => String(s || "").replace(/\D/g, "");
 let LIDS = {}; try { LIDS = JSON.parse(fs.readFileSync(F_LID, "utf8")) || {}; } catch { }
 let tLid = null; const guardarLids = () => { clearTimeout(tLid); tLid = setTimeout(() => { try { fs.writeFileSync(F_LID, JSON.stringify(LIDS)); } catch { } }, 1500); };
@@ -661,6 +661,28 @@ export function escudoEstado(sl) {
    Para el cliente no cambia nada (salen todos), pero cuando el número está en riesgo van más lentos.
    Devuelve { ritmo, salud (0-100), motivo }. ritmo 1 = normal; hasta ~3.5 cuando la salud está baja.
    Trabaja en silencio: no avisa al vendedor ni muestra nada en la app (no asustar). */
+/* ===== Calentamiento de números nuevos (25/11f) =====
+   Pedido de Joaquin: un número recién vinculado NO debe estrenarse con una campaña grande.
+   Las primeras difusiones van en tandas que crecen día a día, mientras el número se "calienta".
+   Solo aplica a números NUEVOS (primeros días). Un número ya establecido NO tiene techo.
+   El resto NO se pierde: queda en cola y sale en la siguiente tanda (al día siguiente). Es gradual, nunca un frenazo.
+   Si el número tuvo un 401/403 hace poco, baja un escalón (más cuidado). */
+const CALENTAR = [150, 300, 500, 800];   /* tandas por día; del 5.º día en adelante = tope del plan */
+export function diasVinculado(sl) { return sl.DATA && sl.DATA.vinculadoTs ? Math.floor((Date.now() - sl.DATA.vinculadoTs) / (24 * 3600000)) : 999; }
+const CALAV = new Map();
+export function calAviso(sl, cal) {
+  const hoy = limaHora().dia, k = sl.email + hoy; if (CALAV.get(k)) return; CALAV.set(k, 1);
+  avisar("cal:" + sl.email + hoy, "🌡️ Calentando el número de " + vgNom(sl.email) + " (nuevo, día " + (cal.dia + 1) + "): hoy salió su tanda de " + cal.techo + ". El resto sale mañana solo. Así no lo desvincula WhatsApp por estrenarse con una campaña grande.", 600);
+}
+export function calentamiento(sl) {
+  const dias = diasVinculado(sl);
+  if (dias >= CALENTAR.length) return { techo: Infinity, dia: dias, nuevo: false };  /* ya está caliente: sin techo */
+  let nivel = dias;
+  /* si se desvinculó (401/403) en las últimas 48 h, retrocede un escalón */
+  const d = sl.DATA && sl.DATA.desvinculado; 
+  if (d && d.fecha) { try { if (Date.now() - new Date(d.fecha + "T" + (d.hora || "00:00") + ":00-05:00").getTime() < 48 * 3600000) nivel = Math.max(0, nivel - 1); } catch { } }
+  return { techo: CALENTAR[Math.min(nivel, CALENTAR.length - 1)], dia: dias, nuevo: true, tandas: CALENTAR };
+}
 export function escudoABS(sl) {
   const ahora = Date.now(), st = escudoEstado(sl);
   const minsVinc = sl.DATA && sl.DATA.vinculadoTs ? (ahora - sl.DATA.vinculadoTs) / 60000 : 999999;

@@ -163,3 +163,22 @@ test("al reconectar, si se avisó la caída, se manda la reanudación al WhatsAp
   assert.match(src, /tu difusión se reanudó sola/);                // el mensaje bonito
   assert.ok(src.indexOf("avisadoCaida = false") < src.indexOf("tu difusión se reanudó"), "no se limpia la marca antes de avisar");
 });
+
+/* ===== 25/11f: calentamiento de números nuevos ===== */
+test("calentamiento: número nuevo sube de tanda por día; número viejo sin techo", () => {
+  const dia = (n) => ({ email: "x@y.com", DATA: { vinculadoTs: Date.now() - n * 24 * 3600000 } });
+  assert.equal(SX.calentamiento(dia(0)).techo, 150);
+  assert.equal(SX.calentamiento(dia(1)).techo, 300);
+  assert.equal(SX.calentamiento(dia(3)).techo, 800);
+  assert.equal(SX.calentamiento(dia(5)).techo, Infinity);   // ya caliente
+  assert.equal(SX.calentamiento(dia(5)).nuevo, false);
+});
+test("calentamiento: si se desvinculó hace poco, retrocede un escalón", () => {
+  const hoy = new Date(Date.now() - 5 * 3600000).toISOString().slice(0, 10);
+  const sl = { email: "z@y.com", DATA: { vinculadoTs: Date.now() - 2 * 24 * 3600000, desvinculado: { fecha: hoy, hora: "10:00" } } };
+  assert.equal(SX.calentamiento(sl).techo, 300);   // día 2 (=500) baja a día 1 (=300)
+});
+test("worker aplica el techo de calentamiento solo a números nuevos", () => {
+  assert.match(fuente, /cal\.nuevo && DATA\.sentToday >= cal\.techo/);
+  assert.match(fuente, /tanda de calentamiento/);
+});

@@ -181,8 +181,9 @@ async function worker(sl) {
   while (queue.length) {
     if (sl.paused || st.state !== "open") { await sleep(3000); continue; }
     if (DATA.day !== today()) { DATA.day = today(); DATA.sentToday = 0; }
-    const capHoy = Math.min(CFG.dailyCap, (sl.acc && sl.acc.tope_dia) || Infinity);
+    const cal = SX.calentamiento(sl), capHoy = Math.min(CFG.dailyCap, (sl.acc && sl.acc.tope_dia) || Infinity);
     if (restantes(sl.acc) <= 0) { st.err = "Se acabaron los envíos de su plan."; queue.length = 0; break; }
+    if (cal.nuevo && DATA.sentToday >= cal.techo) { st.err = "Número nuevo: hoy salieron " + DATA.sentToday + " (tanda de calentamiento, día " + (cal.dia + 1) + "). El resto sale mañana solo, para cuidar el número."; SX.calAviso(sl, cal); await sleep(60000); continue; }
     if (DATA.sentToday >= capHoy) { st.err = "Se alcanzó el tope diario (" + capHoy + "). Continúa mañana."; await sleep(60000); continue; }
     st.err = "";
     if (sl.sinceBreak >= CFG.batch) { sl.breakUntil = Date.now() + CFG.pauseMin * 60000; log(sl.email, "descanso", CFG.pauseMin, "min"); await sleep(CFG.pauseMin * 60000); sl.sinceBreak = 0; sl.breakUntil = 0; continue; }

@@ -116,7 +116,7 @@ test("401 real: archiva la sesión (no la borra) y guarda solo las 2 últimas", 
 });
 test("puente: QR vencido no cuenta como corte, 401 tras 515 no es expulsión, llaves en caché", () => {
   assert.match(fuente, /const eraQR = sl\.qrVisto && code !== 515/);
-  assert.ok(fuente.indexOf("if (eraQR)") < fuente.indexOf("SX.vigiaCierre(sl, code)"), "el QR vencido llega al escudo");
+  assert.ok(fuente.indexOf("if (eraQR)") < fuente.indexOf("SX.vigiaCierre(sl, code"), "el QR vencido llega al escudo");
   assert.match(fuente, /sl\.t515 && Date\.now\(\) - sl\.t515 < 90000/);
   assert.match(fuente, /makeCacheableSignalKeyStore/);
   assert.match(fuente, /SX\.sesionArchivar\(sl\.auth\)/);
@@ -188,7 +188,7 @@ test("worker aplica el techo de calentamiento solo a números nuevos", () => {
 test("vigiaCierre registra las desvinculaciones reales (401/403) en la base", () => {
   const src = fs.readFileSync(new URL("../sigo-extra.mjs", import.meta.url), "utf8");
   assert.match(src, /async function registrarDesvinc/);
-  assert.match(src, /code === 401 \|\| code === 403\) registrarDesvinc/);
+  assert.match(src, /code === 401 \|\| code === 403\)\) registrarDesvinc/);
   assert.match(src, /puente_desvinculacion/);
 });
 
@@ -205,4 +205,42 @@ test("fraseCalentando: devuelve una frase corta, motivadora y sin tope/número",
   assert.ok(typeof f === "string" && f.length > 10 && f.length < 160);
   assert.ok(!/\d{2,}/.test(f), "no debe mostrar números de tope");
   assert.ok(/tus mensajes|todo|enviando|salir|saliendo/i.test(f));
+});
+
+/* ===== 25/11k: falsos positivos de desvinculación (caso Ania 25/11 21:07) ===== */
+test("vinculado hace 4 min, cola 0 y sin envíos → dice que NO estaba enviando", () => {
+  const now = Date.now(), sl = { email: "ania@x.com", DATA: { results: [], vinculadoTs: now - 5 * 86400000, ultVinc: now - 4 * 60000 }, queue: [], st: {} };
+  const c = SX.causaCaida(sl, 401, "conflict/device_removed");
+  assert.equal(c.tipo, "vinculacion_rechazada");
+  assert.match(c.texto, /NO estaba enviando/);
+  assert.match(c.texto, /device_removed/);
+  const d = SX.diagCaida(sl, 401, "conflict/device_removed");
+  assert.ok(!/spam|volumen/.test(d), d);
+  assert.match(d, /vinculado hace 4 min/);   // usa la última vinculación, no la primera
+});
+test("con envíos fuertes sigue culpando al volumen", () => {
+  const now = Date.now(), r = Array.from({ length: 40 }, () => ({ ok: true, ts: new Date(now - 60000).toISOString() }));
+  assert.equal(SX.causaCaida({ email: "v@x.com", DATA: { results: r }, queue: [5], st: {} }, 401).tipo, "volumen");
+});
+test("el primer 401 (reintento) no cuenta como corte ni se registra; el confirmado sí, una sola vez", () => {
+  SX._probarCon({ sellers: () => [], cfg: {}, log() {} });
+  const sl = { email: "r" + Math.random() + "@x.com", DATA: { results: [] }, queue: [], st: {} };
+  SX.vigiaCierre(sl, 401, { reintento: true });
+  assert.equal(SX.escudoEstado(sl).cortes_30min, 0);
+  assert.match(sl.DATA.cortes.at(-1).motivo, /reintento/);
+  SX.vigiaCierre(sl, 401, { det: "conflict/device_removed" });
+  assert.equal(SX.escudoEstado(sl).cortes_30min, 1);
+  assert.equal(SX.escudoEstado(sl).nivel, 0, "una sola desvinculación no debe poner el escudo en lento");
+  assert.equal(sl.DATA.cortes.at(-1).causa, "telefono");
+  assert.equal(sl.DATA.cortes.at(-1).detalle, "conflict/device_removed");
+});
+test("detalleError lee lo que manda WhatsApp (stream error y failure)", () => {
+  assert.match(SX.detalleError({ message: "Stream Errored (conflict)", data: { tag: "stream:error", content: [{ tag: "conflict", attrs: { type: "device_removed" } }] } }), /conflict\/device_removed/);
+  assert.match(SX.detalleError({ message: "Connection Failure", data: { reason: "401", location: "frc" } }), /reason=401/);
+  assert.equal(SX.detalleError(null), "");
+});
+test("puente.js: marca el primer 401 como reintento, guarda ultVinc y no muestra escudo si está caído", () => {
+  assert.match(fuente, /reintento: primer401, det: SX\.detalleError/);
+  assert.match(fuente, /sl\.DATA\.ultVinc = Date\.now\(\)/);
+  assert.match(fuente, /sl\.st\.state !== "open"\) x\.nivel = 0/);
 });

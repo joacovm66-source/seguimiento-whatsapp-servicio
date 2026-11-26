@@ -116,7 +116,7 @@ async function startWA(sl) {
         sl.rq = Date.now(); sl.gen++; sl.started = false; try { sock.end(undefined); } catch { } log(sl.email, "pidió QR estando vinculado: restauro credenciales y reintento");
         setTimeout(() => { SX.credsRestaurar(sl.auth, true); startWA(sl); }, 3000); return; }
       if (u.qr) { sl.qrVisto = true; sl.st.state = "qr"; sl.st.qr = await QRCode.toDataURL(u.qr, { margin: 2, scale: 6, errorCorrectionLevel: "M" }); log(sl.email, "espera que escaneen el QR"); }
-      if (u.connection === "open") { sl.retry = 0; sl.r500 = 0; sl.qrRondas = 0; sl.qrVisto = false; SX.credsRespaldar(sl.auth); if (!sl.DATA.vinculadoTs) { sl.DATA.vinculadoTs = Date.now(); } if (sl.st.me && sl.DATA.miNumero !== sl.st.me) { sl.DATA.miNumero = sl.st.me; } sl.DATA.avisoEpisodio = false; saveData(sl); sl.DATA.desvinculado = null; sl.st.state = "open"; sl.st.qr = null; sl.st.err = ""; sl.st.me = digits((sock.user && sock.user.id || "").split(":")[0].split("@")[0]); log(sl.email, "WhatsApp conectado:", sl.st.me); if (sl.queue.length) worker(sl); }
+      if (u.connection === "open") { sl.retry = 0; sl.r500 = 0; sl.qrRondas = 0; sl.qrVisto = false; SX.credsRespaldar(sl.auth); if (!sl.DATA.vinculadoTs) { sl.DATA.vinculadoTs = Date.now(); } if (sl.t515 && Date.now() - sl.t515 < 5 * 60000) sl.DATA.ultVinc = Date.now(); /* hora de la última vinculación (solo diagnóstico, no toca el calentamiento) */ if (sl.st.me && sl.DATA.miNumero !== sl.st.me) { sl.DATA.miNumero = sl.st.me; } sl.DATA.avisoEpisodio = false; saveData(sl); sl.DATA.desvinculado = null; sl.st.state = "open"; sl.st.qr = null; sl.st.err = ""; sl.st.me = digits((sock.user && sock.user.id || "").split(":")[0].split("@")[0]); log(sl.email, "WhatsApp conectado:", sl.st.me); if (sl.queue.length) worker(sl); }
       if (u.connection === "close") {
         const code = u.lastDisconnect && u.lastDisconnect.error && u.lastDisconnect.error.output && u.lastDisconnect.error.output.statusCode;
         log(sl.email, "conexión cerrada, código", code, String(u.lastDisconnect && u.lastDisconnect.error && u.lastDisconnect.error.message || "").slice(0, 120));
@@ -129,7 +129,8 @@ async function startWA(sl) {
         sl.st.state = "off"; sl.st.qr = null; sl.st.me = ""; sl.started = false;
         /* Capa 4 (25/11): un 401 que llega justo después de un 515 (reinicio normal) es limpieza de WhatsApp multi-dispositivo, no una expulsión. */
         if (code === B.DisconnectReason.loggedOut && sl.t515 && Date.now() - sl.t515 < 90000) { log(sl.email, "401 tras 515: no es expulsión, reconecto"); sl.st.err = "Reconectando…"; setTimeout(() => startWA(sl), 5000); return; }
-        SX.vigiaCierre(sl, code);
+        const es401 = code === B.DisconnectReason.loggedOut, primer401 = es401 && (!sl.r401 || Date.now() - sl.r401 > 10 * 60000);
+        SX.vigiaCierre(sl, code, { reintento: primer401, det: SX.detalleError(u.lastDisconnect && u.lastDisconnect.error) });
         if (code === 403) { sl.st.err = "WhatsApp restringió este número. No envíe más por ahora y revise el teléfono."; log(sl.email, "NÚMERO RESTRINGIDO por WhatsApp"); sl.paused = true; sl.pausa = { por: "WhatsApp restringió el número (código 403)", ts: Date.now() }; return; }
         if (code === B.DisconnectReason.loggedOut && (!sl.r401 || Date.now() - sl.r401 > 10 * 60000)) { sl.r401 = Date.now(); log(sl.email, "401: reintento una vez antes de pedir QR"); sl.st.err = "Reconectando…"; setTimeout(() => startWA(sl), 20000); }
         else if (code === B.DisconnectReason.loggedOut) { sl.r401 = 0; SX.sesionArchivar(sl.auth); log(sl.email, "sesión cerrada desde el teléfono"); sl.st.err = "Se cerró la sesión desde el teléfono. Escanee otra vez."; }
@@ -328,7 +329,7 @@ async function openTunnel() {
 }
 setInterval(publish, 60000);
 /* Presencia: cada 30 s avisa a Sigo qué vendedores tienen su WhatsApp conectado (el jefe lo ve en tiempo real). */
-setInterval(async () => { if (MOCK) return; const l = [...sellers.values()].map(sl => { let esc = ""; try { const x = SX.escudoEstado(sl); esc = x.nivel ? (x.nivel === 2 ? "freno: " : "lento: ") + x.motivo : ""; } catch { } return { email: sl.email, state: sl.st.state, me: sl.st.me || sl.DATA.miNumero || "", err: sl.st.err || "", cola: sl.queue.length, cortes: (sl.DATA.cortes || []).slice(-6), escudo: esc, ver: SX.VERSION }; }); if (l.length) { try { await rpc("puente_presencia", { p_lista: l }); } catch { } } }, 30000);
+setInterval(async () => { if (MOCK) return; const l = [...sellers.values()].map(sl => { let esc = ""; try { const x = SX.escudoEstado(sl); if (sl.st.state !== "open") x.nivel = 0; /* el escudo solo importa si está conectado */ esc = x.nivel ? (x.nivel === 2 ? "freno: " : "lento: ") + x.motivo : ""; } catch { } return { email: sl.email, state: sl.st.state, me: sl.st.me || sl.DATA.miNumero || "", err: sl.st.err || "", cola: sl.queue.length, cortes: (sl.DATA.cortes || []).slice(-6), escudo: esc, ver: SX.VERSION }; }); if (l.length) { try { await rpc("puente_presencia", { p_lista: l }); } catch { } } }, 30000);
 
 server.listen(PORT, HOST, () => {
   console.log("\n==============================================");

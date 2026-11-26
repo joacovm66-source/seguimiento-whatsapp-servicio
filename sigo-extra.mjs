@@ -14,7 +14,7 @@ const DIR = path.dirname(fileURLToPath(import.meta.url));
 const STORE = process.env.DATA_DIR || DIR;
 const MDIR = path.join(STORE, "media"); fs.mkdirSync(MDIR, { recursive: true });
 const F_LID = path.join(STORE, "lids.json");
-export const VERSION = "2026-11-25j";
+export const VERSION = "2026-11-25k";
 const digits = s => String(s || "").replace(/\D/g, "");
 let LIDS = {}; try { LIDS = JSON.parse(fs.readFileSync(F_LID, "utf8")) || {}; } catch { }
 let tLid = null; const guardarLids = () => { clearTimeout(tLid); tLid = setTimeout(() => { try { fs.writeFileSync(F_LID, JSON.stringify(LIDS)); } catch { } }, 1500); };
@@ -494,35 +494,66 @@ const limaHora = () => { const d = new Date(Date.now() - 5 * 3600000); return { 
 export function vigiaError(e) { VG.errores.push(Date.now()); VG.ultErr = String(e && e.message || e).slice(0, 150); }
 const MOTIVO = { 401: "cerraron la sesión desde el teléfono o WhatsApp la expulsó", 403: "WhatsApp restringió el número", 408: "se cortó la conexión (internet)", 428: "WhatsApp cerró la conexión", 440: "la misma cuenta se abrió en otro lugar (otro puente o otro QR)", 500: "sesión dañada", 515: "reinicio normal tras vincular" };
 export const vgMotivo = c => c ? (MOTIVO[c] || "código " + c) + " [" + c + "]" : "";
-/* Diagnóstico de una caída: un solo mensaje con todo lo que importa, sin rodeos. */
-export function diagCaida(sl, code) {
-  const ahora = Date.now(), R = sl.DATA.results || [], st = escudoEstado(sl);
+/* Detalle técnico que manda WhatsApp al cerrar (26/11): ej. "conflict/device_removed" = quitaron el dispositivo. */
+export function detalleError(err) {
+  try {
+    if (!err) return "";
+    const d = err.data || (err.output && err.output.payload && err.output.payload.data) || null, P = [];
+    const msg = String(err.message || "").replace(/^Stream Errored\s*/i, "").slice(0, 60); if (msg) P.push(msg);
+    if (d && Array.isArray(d.content)) for (const c of d.content) if (c && c.tag) P.push(c.tag + (c.attrs && c.attrs.type ? "/" + c.attrs.type : ""));
+    const at = d && (d.attrs || (typeof d.reason !== "undefined" ? d : null));
+    if (at) for (const k of ["reason", "type", "location"]) if (at[k] != null) P.push(k + "=" + at[k]);
+    return [...new Set(P)].join(" ").slice(0, 120);
+  } catch { return ""; }
+}
+/* Diagnóstico de una caída: un solo mensaje con todo lo que importa, sin rodeos.
+   26/11: separa "no estaba enviando" de "envío masivo" (antes un 401 sin envíos parecía culpa de las difusiones)
+   y usa la hora de la ÚLTIMA vinculación (ultVinc), no la primera (vinculadoTs). */
+export function causaCaida(sl, code, det) {
+  const ahora = Date.now(), R = sl.DATA.results || [];
   const h1 = R.filter(r => r.ok && ahora - Date.parse(r.ts) < 60 * 60000).length;
   const m5 = R.filter(r => ahora - Date.parse(r.ts) < 5 * 60000).length;
-  const minsVinc = sl.DATA.vinculadoTs ? Math.round((ahora - sl.DATA.vinculadoTs) / 60000) : null;
-  const L = [];
-  L.push("cola: " + (sl.queue.length || 0));
-  L.push("enviados: " + h1 + "/h, " + m5 + " en los últimos 5 min");
-  if (st.entrega < 100) L.push("llegaban: " + st.entrega + "%");
-  if (st.sin_whatsapp > 0) L.push("sin WhatsApp: " + st.sin_whatsapp + "%");
-  if (minsVinc != null && minsVinc < 24 * 60) L.push("vinculado hace " + (minsVinc < 60 ? minsVinc + " min" : Math.round(minsVinc / 60) + " h"));
-  const causa = code === 401 ? (h1 >= 30 || m5 >= 5 ? "Causa probable: WhatsApp sospechó spam por el ritmo/volumen." : minsVinc != null && minsVinc < 120 ? "Causa probable: número recién vinculado enviando mucho." : h1 === 0 ? "Causa probable: lo cerraron desde el teléfono o pasó de 4 dispositivos." : "Causa probable: reputación del número.")
-    : code === 403 ? "WhatsApp restringió el número (no es un corte normal)."
-    : code === 440 ? "La misma cuenta está abierta en otro puente u otra PC." : "";
-  return L.join(" · ") + (causa ? "\n" + causa : "");
+  const tv = sl.DATA.ultVinc || sl.DATA.vinculadoTs, minsVinc = tv ? Math.round((ahora - tv) / 60000) : null;
+  const cola = sl.queue.length || 0, sinEnvio = h1 === 0 && m5 === 0, quitado = /device_removed/i.test(det || "");
+  let tipo = "", texto = "";
+  if (code === 401) {
+    if (sinEnvio && minsVinc != null && minsVinc <= 30) { tipo = "vinculacion_rechazada"; texto = "NO estaba enviando (0 enviados" + (cola ? ", la cola de " + cola + " estaba quieta" : ", cola vacía") + "). Se vinculó hace " + minsVinc + " min: lo quitaron desde el teléfono o WhatsApp rechazó la vinculación nueva (pasa al vincular/desvincular varias veces seguidas o con 4 dispositivos ya vinculados)."; }
+    else if (sinEnvio) { tipo = "telefono"; texto = "NO estaba enviando (0 enviados en 1 h" + (cola ? ", cola de " + cola + " quieta" : ", cola vacía") + "). Lo cerraron desde el teléfono (Dispositivos vinculados) o pasó de 4 dispositivos."; }
+    else if (h1 >= 30 || m5 >= 5) { tipo = "volumen"; texto = "Estaba enviando (" + h1 + " en 1 h): WhatsApp sospechó spam por el ritmo/volumen."; }
+    else if (minsVinc != null && minsVinc < 120) { tipo = "recien_vinculado"; texto = "Número recién vinculado (hace " + minsVinc + " min) enviando (" + h1 + " en 1 h)."; }
+    else { tipo = "reputacion"; texto = "Enviaba poco (" + h1 + " en 1 h): probable reputación del número o lo cerraron desde el teléfono."; }
+    if (quitado) texto += " WhatsApp confirmó que quitaron el dispositivo (device_removed).";
+  } else if (code === 403) { tipo = "restringido"; texto = "WhatsApp restringió el número (no es un corte normal)."; }
+  else if (code === 440) { tipo = "duplicado"; texto = "La misma cuenta está abierta en otro puente u otra PC."; }
+  return { tipo, texto, h1, m5, minsVinc, cola, sinEnvio };
 }
-export function vigiaCierre(sl, code) {
-  escudoCorte(sl, code);
-  if (code === 401) avisar("d401:" + sl.email, "🔴 Se desvinculó " + vgNom(sl.email) + " [401]\n" + diagCaida(sl, 401) + "\nAcción: el vendedor debe escanear el QR en Sigo. La cola no se pierde.", 30);
+export function diagCaida(sl, code, det) {
+  const st = escudoEstado(sl), c = causaCaida(sl, code, det), L = [];
+  L.push("cola: " + c.cola);
+  L.push("enviados: " + c.h1 + "/h, " + c.m5 + " en los últimos 5 min");
+  if (!c.sinEnvio && st.entrega < 100) L.push("llegaban: " + st.entrega + "%");
+  if (!c.sinEnvio && st.sin_whatsapp > 0) L.push("sin WhatsApp: " + st.sin_whatsapp + "%");
+  if (c.minsVinc != null && c.minsVinc < 24 * 60) L.push("vinculado hace " + (c.minsVinc < 60 ? c.minsVinc + " min" : Math.round(c.minsVinc / 60) + " h"));
+  return L.join(" · ") + (det ? "\nWhatsApp dijo: " + det : "") + (c.texto ? "\nCausa probable: " + c.texto : "");
+}
+/* info.reintento = primer 401 (el puente reintenta en 20 s): NO es una caída todavía → no frena el escudo, no avisa, no se registra.
+   Antes el primer 401 y el confirmado contaban como 2 cortes y el escudo marcaba "lento" sin haber enviado nada (falso positivo). */
+export function vigiaCierre(sl, code, info) {
+  info = info || {}; const det = info.det || "", reintento = !!info.reintento;
+  if (!reintento) escudoCorte(sl, code);
+  const c = reintento ? null : causaCaida(sl, code, det);
+  if (code === 401 && !reintento) avisar("d401:" + sl.email, "🔴 Se desvinculó " + vgNom(sl.email) + " [401]\n" + diagCaida(sl, 401, det) + "\nAcción: el vendedor debe escanear el QR en Sigo. La cola no se pierde.", 30);
   const v = vgS(sl); v.cierres.push(Date.now()); v.ultCod = code; v.motivos = (v.motivos || []).concat(vgMotivo(code) + " " + hLima(Date.now())).slice(-5); sl.motivosCierre = v.motivos;
-  if (code === 401 || code === 403) registrarDesvinc(sl, code);   /* guardar el patrón de cada desvinculación real */
+  if (!reintento && (code === 401 || code === 403)) registrarDesvinc(sl, code, det, c);   /* guardar el patrón de cada desvinculación real */
   try { /* se guarda en datos.json: el motivo no se pierde aunque el puente se reinicie */
-    const L = limaHora(); sl.DATA.cortes = (sl.DATA.cortes || []).concat({ fecha: L.dia, hora: hLima(Date.now()), codigo: code || 0, motivo: vgMotivo(code) || "sin código" }).slice(-15);
-    if (code === 401) sl.DATA.desvinculado = { fecha: L.dia, hora: hLima(Date.now()), motivo: vgMotivo(code) }; } catch { }
+    const L = limaHora(), x = { fecha: L.dia, hora: hLima(Date.now()), codigo: code || 0, motivo: reintento ? "posible expulsión: reintento en 20 s [" + code + "]" : (vgMotivo(code) || "sin código") };
+    if (det) x.detalle = det; if (c && c.tipo) { x.causa = c.tipo; x.enviados_1h = c.h1; x.cola = c.cola; }
+    sl.DATA.cortes = (sl.DATA.cortes || []).concat(x).slice(-15);
+    if (code === 401 && !reintento) sl.DATA.desvinculado = { fecha: L.dia, hora: hLima(Date.now()), motivo: vgMotivo(code), causa: c && c.tipo }; } catch { }
   if (code === 440) avisar("dup:" + sl.email, "🔴 El WhatsApp de " + vgNom(sl.email) + " se abrió en OTRO puente u otra PC al mismo tiempo. Deja un solo INICIAR.bat abierto (si hay dos, se botan entre ellos y WhatsApp termina desvinculando).", 120);
   if (code === 403) avisar("restr:" + sl.email, "🔴 WhatsApp RESTRINGIÓ el número de " + vgNom(sl.email) + ". Se pausaron sus envíos. Revisar su teléfono.", 360);
 }
-async function registrarDesvinc(sl, code) {
+async function registrarDesvinc(sl, code, det, c) {
   try {
     const S = VCTX && VCTX.supa; if (!S) return;
     const ahora = Date.now(), R = sl.DATA.results || [], st = escudoEstado(sl);
@@ -532,7 +563,7 @@ async function registrarDesvinc(sl, code) {
       enviados_5min: R.filter(r => ahora - Date.parse(r.ts) < 5 * 60000).length,
       min_vinculado: sl.DATA.vinculadoTs ? Math.round((ahora - sl.DATA.vinculadoTs) / 60000) : null,
       cola: sl.queue.length, entrega: st.entrega, sin_whatsapp: st.sin_whatsapp,
-      detalle: { dia_calentamiento: diasVinculado(sl) + 1, cortes_30min: st.cortes_30min }
+      detalle: { dia_calentamiento: diasVinculado(sl) + 1, cortes_30min: st.cortes_30min, whatsapp_dijo: det || "", causa: c && c.tipo || "", causa_texto: c && c.texto || "", min_ult_vinculacion: c && c.minsVinc }
     };
     await fetch(S.url + "/functions/v1/puente", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fn: "puente_desvinculacion", args: { secret: S.secret, p } }) });
   } catch { }
